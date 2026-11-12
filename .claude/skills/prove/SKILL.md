@@ -1,9 +1,9 @@
 ---
-name: verify
-description: Prove a change works by running the real product (server + web app) and leaving evidence. Use before opening any PR, and whenever a PR template asks for verification.
+name: prove
+description: Prove a change works by running the real product (server + web app) and leaving evidence. Use before opening any PR, and whenever a PR template asks for verification. Not gstack's /verify (which makes the checks green); this is about evidence.
 ---
 
-# Verify: run the product, leave evidence
+# Prove it works: run the product, leave evidence
 
 A change is verified when the real app did the thing, and the proof survives the session. Reading code or passing typecheck is not verification.
 

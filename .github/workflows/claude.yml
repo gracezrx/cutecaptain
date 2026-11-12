@@ -66,4 +66,4 @@ jobs:
             --max-turns 60
             --max-budget-usd 6
             --allowedTools "Read,Edit,Write,Glob,Grep,Bash(git *),Bash(gh *),Bash(npm *),Bash(npx *),Bash(node *),Bash(psql *),Bash(cat *),Bash(ls *),Bash(mkdir *),Bash(cd *),Bash(E2E_SERVER_LOG=* *),Bash(PLAYWRIGHT_* *)"
-            --append-system-prompt "Read CLAUDE.md first. Use the bugfix and verify skills. Every change needs evidence from the real product (e2e spec + screenshot, or a server test). Run all gates before pushing. Never merge; a person does that."
+            --append-system-prompt "Read CLAUDE.md first. Use the bugfix and prove skills. Every change needs evidence from the real product (e2e spec + screenshot, or a server test). Run all gates before pushing. Never merge; a person does that."

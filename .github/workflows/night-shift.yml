@@ -132,7 +132,7 @@ jobs:
             Start by reading CLAUDE.md. Then read the issue: `gh issue view ${{ matrix.issue }} --comments`.
 
             Rules of the shift:
-            - Use the `bugfix` skill for bugs and the `verify` skill for everything. The standard is: reproduced before, gone after, with evidence.
+            - Use the `bugfix` skill for bugs and the `prove` skill for everything. The standard is: reproduced before, gone after, with evidence.
             - You are on branch agent/issue-${{ matrix.issue }}. Commit small, atomic commits with clear messages. Never touch main.
             - Run every gate before you open the PR: `node scripts/check-boundaries.mjs`, `node scripts/ratchet.mjs`, `cd server && npm run typecheck && npm test`, `cd desktop && npm run typecheck && npm run build && npm run e2e`. A red gate means you are not done.
             - If the issue is too big for one PR, do the first self-contained slice, open the PR for it, and leave a comment on the issue listing the remaining slices.

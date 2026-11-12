@@ -17,7 +17,7 @@ If you find yourself leaving the same review note twice, stop and turn it into a
 ## How to work
 
 - **Small, atomic PRs.** One concern per PR: a bug, a feature slice, a refactor. A big task becomes several PRs, each green on its own. Never mix a refactor with a behaviour change.
-- **Prove it works.** A PR says how the change was verified and attaches evidence: which e2e spec covers it (new or existing), the screenshot path under `desktop/e2e/evidence/`, the server test. "Should work now" is not evidence. Use the `verify` skill.
+- **Prove it works.** A PR says how the change was verified and attaches evidence: which e2e spec covers it (new or existing), the screenshot path under `desktop/e2e/evidence/`, the server test. "Should work now" is not evidence. Use the `prove` skill.
 - **Bugs: reproduced before, gone after.** Write the failing e2e spec or server test first, watch it fail, fix, watch it pass. Use the `bugfix` skill. A fix with no failing test first is a guess.
 - **Find the feature in `docs/FEATURE_MAP.md`** before touching code: it gives the entry point, the control names, and the files. If the feature isn't there, add the row in the same PR.
 - **Read before you diagnose.** Never state a root cause you haven't seen in code or in a log. If you can't reproduce, say so and stop; don't ship a speculative fix.
