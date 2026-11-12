@@ -2,16 +2,17 @@
 // each with a way to check it works. Shown after the first sign-in and
 // reachable any time from the menu bar icon, Settings → This Mac and Home.
 
-import {BellRing, Check, ChevronDown, Cpu, ExternalLink, Keyboard, MessagesSquare, Mic, MonitorUp, Puzzle, Server, UserRound, Users} from 'lucide-react';
+import {BellRing, Check, ChevronDown, Cpu, ExternalLink, Keyboard, MessagesSquare, Mic, MonitorUp, MousePointerClick, Puzzle, Server, UserRound, Users} from 'lucide-react';
 import {type ReactNode, useEffect, useRef, useState} from 'react';
 
 import {ghostBtn, Modal, primaryBtn} from '../components/Modal';
 import {ShortcutRow} from '../components/ShortcutRow';
 import {getServerUrl} from '../lib/api';
 import {getVoiceLang} from '../lib/dictation';
+import {permissions as deskPermissions, type Permissions} from '../lib/computer';
 import {
-    captureScreen, isTauri, LOCAL_SERVER, localServerStatus, type LocalServerStatus, notify, onVoice, openExternal, RELEASE_PAGE, revealChromeExtension,
-    setTalkButtonVisible, shortcutsGet, type ShortcutStatus, speak, talkButtonVisible, voiceCancel, voiceStart, voiceStop,
+    ACCESSIBILITY_SETTINGS, captureScreen, isTauri, LOCAL_SERVER, localServerStatus, type LocalServerStatus, notify, onVoice, openExternal, RELEASE_PAGE, revealChromeExtension,
+    SCREEN_RECORDING_SETTINGS, setTalkButtonVisible, shortcutsGet, type ShortcutStatus, speak, talkButtonVisible, voiceCancel, voiceStart, voiceStop,
 } from '../lib/native';
 import {markSetupSeen} from '../lib/setup';
 import {useShortcutLabels} from '../lib/shortcuts';
@@ -28,7 +29,7 @@ function loadDone(): Record<string, boolean> {
     }
 }
 
-type StepId = 'server' | 'account' | 'model' | 'shortcuts' | 'voice' | 'notifications' | 'screen' | 'extension' | 'rooms';
+type StepId = 'server' | 'account' | 'model' | 'shortcuts' | 'voice' | 'notifications' | 'screen' | 'hands' | 'extension' | 'rooms';
 
 export function SetupGuide({onClose, onModels, onInvite}: {onClose: () => void; onModels: () => void; onInvite: () => void}) {
     const me = useStore((s) => s.me);
@@ -66,11 +67,12 @@ export function SetupGuide({onClose, onModels, onInvite}: {onClose: () => void; 
         voice: Boolean(done.voice),
         notifications: Boolean(done.notifications),
         screen: Boolean(done.screen),
+        hands: Boolean(done.hands),
         extension: Boolean(done.extension),
         rooms: Boolean(done.rooms),
     };
     const steps: StepId[] = isTauri ?
-        ['server', 'account', 'model', 'shortcuts', 'voice', 'notifications', 'screen', 'extension', 'rooms'] :
+        ['server', 'account', 'model', 'shortcuts', 'voice', 'notifications', 'screen', 'hands', 'extension', 'rooms'] :
         ['server', 'account', 'model', 'extension', 'rooms'];
     const firstOpen = steps.find((id) => !status[id]) ?? null;
     const count = steps.filter((id) => status[id]).length;
@@ -153,6 +155,11 @@ export function SetupGuide({onClose, onModels, onInvite}: {onClose: () => void; 
                         <ScreenTest onWorked={() => mark('screen')}/>
                     </Step>
                 )}
+                {isTauri && (
+                    <Step id='hands' n={steps.indexOf('hands') + 1} done={status.hands} open={firstOpen === 'hands'} icon={<MousePointerClick size={16}/>} title='Agents on this Mac' summary={status.hands ? 'On' : 'Let agents open apps, read them, click and type for you'}>
+                        <HandsStep onDone={() => mark('hands')}/>
+                    </Step>
+                )}
                 <Step id='extension' n={steps.indexOf('extension') + 1} done={status.extension} open={firstOpen === 'extension'} icon={<Puzzle size={16}/>} title='The Chrome extension' summary={status.extension ? 'Added' : 'Send pages to Captain, chat in the side panel'}>
                     <ExtensionSteps onDone={() => mark('extension')} onThisMac={onThisMac} serverUrl={serverUrl}/>
                 </Step>
@@ -168,6 +175,40 @@ export function SetupGuide({onClose, onModels, onInvite}: {onClose: () => void; 
                 <button type='button' className={`${primaryBtn} ml-auto`} onClick={onClose}>Done</button>
             </div>
         </Modal>
+    );
+}
+
+// Two permissions, then agents can work on this Mac (Settings → This Mac has the rest).
+function HandsStep({onDone}: {onDone: () => void}) {
+    const [perms, setPerms] = useState<Permissions | null>(null);
+    useEffect(() => {
+        const check = () => void deskPermissions().then(setPerms).catch(() => setPerms({accessibility: false, screen: false}));
+        check();
+        const t = window.setInterval(check, 3000);
+        return () => window.clearInterval(t);
+    }, []);
+    const ok = Boolean(perms?.accessibility && perms?.screen);
+    useEffect(() => {
+        if (ok) {
+            onDone();
+        }
+    }, [ok, onDone]);
+    const row = (label: string, granted: boolean | undefined, link: string) => (
+        <li className='flex items-center gap-2'>
+            <span className={`size-2 rounded-full ${granted ? 'bg-emerald-500' : 'bg-amber-500'}`}/>
+            <span className='flex-1'>{label}</span>
+            {!granted && <button type='button' className={ghostBtn} onClick={() => void openExternal(link)}>Open System Settings</button>}
+        </li>
+    );
+    return (
+        <div className='space-y-2'>
+            <p>Tell the little Captain &ldquo;grab the total from my spreadsheet and send it to Sam from Gmail&rdquo; and it does it on your screen: opens the apps, reads them, clicks and types. It asks once per task (or never, hands-free, in Settings → This Mac); <b className='text-ink'>Esc</b> stops it. It needs two permissions, both for Captain:</p>
+            <ul className='space-y-1.5'>
+                {row('Accessibility — to click, type and read apps', perms?.accessibility, ACCESSIBILITY_SETTINGS)}
+                {row('Screen Recording — to see the screen', perms?.screen, SCREEN_RECORDING_SETTINGS)}
+            </ul>
+            {ok && <p className='inline-flex items-center gap-1 text-accent-text'><Check size={14}/> Ready. Agents can use this Mac.</p>}
+        </div>
     );
 }
 

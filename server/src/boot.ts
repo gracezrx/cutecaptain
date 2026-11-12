@@ -20,6 +20,7 @@ import {JobQueue} from './jobs/queue.js';
 import {Catalog} from './llm/catalog.js';
 import {KeyStore} from './llm/keys.js';
 import {Router} from './llm/router.js';
+import {Devices} from './app/devices.js';
 import {Cluster} from './realtime/cluster.js';
 import {Hub} from './realtime/hub.js';
 import {buildServer} from './server.js';
@@ -55,6 +56,7 @@ export async function boot(opts: BootOptions = {}): Promise<Instance> {
     const storage = new LocalStorage(opts.filesDir ?? config.files.dir);
     const jobs = new JobQueue(sql, {concurrency: config.workers.concurrency, leaseSeconds: config.workers.leaseSeconds});
     const cluster = new Cluster(sql);
+    const devices = new Devices(sql, cluster.nodeId);
 
     // The hub needs the context for typing events; the context needs the hub.
     let ctxRef: Ctx | null = null;
@@ -72,9 +74,14 @@ export async function boot(opts: BootOptions = {}): Promise<Instance> {
             ctxRef.hub.publish(ids, {event: 'typing', data: {channelId, rootId, userId}}, {droppable: true, exceptConnectionId: connectionId});
         },
         forward: (userIds, event, o) => cluster.forward(userIds, event, o),
+        onDeviceRegister: (userId, connectionId, device) => devices.register(userId, connectionId, device),
+        onDeviceResult: (userId, connectionId, requestId, ok, result, error) => devices.answered(userId, connectionId, requestId, ok, result, error),
+        onDeviceClosed: (connectionId) => devices.closed(connectionId),
+        onDevicesAlive: (ids) => devices.alive(ids),
     });
-    const ctx = createCtx({sql, hub, storage, jobs, router, keys});
+    const ctx = createCtx({sql, hub, storage, jobs, router, keys, devices});
     ctxRef = ctx;
+    devices.attach(ctx);
 
     const orchestrator = new Orchestrator(ctx);
     orchestrator.register();
@@ -84,6 +91,7 @@ export async function boot(opts: BootOptions = {}): Promise<Instance> {
 
     hub.start();
     await cluster.start(hub);
+    await devices.start();
     await keys.start();
     if (opts.workers ?? config.workers.enabled) {
         await jobs.start();
@@ -115,6 +123,7 @@ export async function boot(opts: BootOptions = {}): Promise<Instance> {
             hub.stop();
             await jobs.stop();
             await cluster.stop();
+            await devices.stop();
             await keys.stop();
             await sql.end({timeout: 5});
         },

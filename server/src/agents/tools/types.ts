@@ -17,7 +17,8 @@ export type ToolContext = {
     trustedLinks: () => Set<string>; // links people shared or a search returned in this conversation
 };
 
-export type ToolResult = {content: string; fileIds?: string[]};
+// `images` are data URLs (screenshots) the model is shown after the text.
+export type ToolResult = {content: string; fileIds?: string[]; images?: string[]};
 
 export type ApprovalText = {title: string; reason: string; fields: {label: string; value: string}[]};
 
@@ -27,6 +28,8 @@ export type Tool = {
     parameters: Record<string, unknown>; // JSON Schema
     // Actions with outside effects pause for a person's approval first.
     external: boolean;
+    // A switch on the agent (use_computer, use_browser), not a tool the model calls.
+    marker?: boolean;
     // Some calls need approval depending on their arguments (e.g. a link nobody shared).
     needsApproval?: (tc: ToolContext, args: Record<string, unknown>) => boolean;
     available: () => boolean;

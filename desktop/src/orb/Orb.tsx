@@ -17,7 +17,7 @@
 import {invoke} from '@tauri-apps/api/core';
 import {emitTo, listen} from '@tauri-apps/api/event';
 import {currentMonitor, getCurrentWindow, PhysicalPosition, PhysicalSize} from '@tauri-apps/api/window';
-import {Check, ChevronDown, Hash, TextCursorInput, VolumeX, X} from 'lucide-react';
+import {Check, ChevronDown, Hash, MousePointerClick, TextCursorInput, VolumeX, X} from 'lucide-react';
 import {useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
 
 import {portraitSrc} from '../components/Avatar';
@@ -26,6 +26,7 @@ import {
     ACCESSIBILITY_SETTINGS, type FrontApp, frontApp, isTauri, openExternal, orbEscape, prettyKeys, showPanel,
     shortcutsGet, speak, speakStop, typeInto, type VoiceEvent, voiceCancel, voiceStart, voiceStop,
 } from '../lib/native';
+import type {DriveActivity} from '../lib/device';
 import {type DirectoryAgent, type OrbDirectory, type Route, routeFor} from '../lib/route';
 import {dictated, languageOf, spoken} from '../lib/spoken';
 import {type OrbState, type ReplyByVoice, type TalkReply, type TalkStep, targetFor} from '../lib/talk';
@@ -113,6 +114,8 @@ export function Orb() {
     taskRef.current = task;
     const [answer, setAnswer] = useState<Answer | null>(null);
     const [notice, setNotice] = useState<Notice | null>(null);
+    // An agent at work on this Mac (clicking, typing), from the dashboard window.
+    const [drive, setDrive] = useState<DriveActivity | null>(null);
     const [hover, setHover] = useState(false);
     const [now, setNow] = useState(Date.now());
     const [orb, setOrb] = useState<OrbState>({signedIn: false, needsYou: 0, directory: {channels: [], agents: []}});
@@ -406,6 +409,20 @@ export function Orb() {
         }, 25_000);
         return () => window.clearTimeout(t);
     }, [task, showNotice]);
+
+    // An agent working on this Mac: show each step; Esc or Stop ends it.
+    useTauriEvent<DriveActivity>('device-activity', (a) => {
+        if (a.phase === 'working') {
+            setDrive(a);
+            return;
+        }
+        setDrive(null);
+        if (a.phase === 'stopped') {
+            showNotice({text: a.text === 'Done' ? 'Done on this Mac.' : `Stopped working on this Mac.`, tone: 'info'}, 2500);
+        } else if (a.phase === 'error') {
+            showNotice({text: a.text, tone: 'error'}, 8000);
+        }
+    });
 
     // "Reply by voice" on the card at the top right.
     useTauriEvent<ReplyByVoice>('orb-reply', (r) => {
@@ -715,18 +732,19 @@ export function Orb() {
     const agentByName = (name: string): DirectoryAgent | undefined => orb.directory.agents.find((a) => a.name === name);
     const captain = orb.directory.agents.find((a) => a.isCoordinator);
 
-    const mascot: MascotState = phase === 'listening' ? 'listening' : phase === 'speaking' ? 'speaking' : phase === 'done' ? 'done' : task ? 'working' : orb.needsYou > 0 ? 'needs' : 'idle';
+    const mascot: MascotState = phase === 'listening' ? 'listening' : phase === 'speaking' ? 'speaking' : phase === 'done' ? 'done' : task || drive ? 'working' : orb.needsYou > 0 ? 'needs' : 'idle';
     const sentFresh = task ? now - task.sentAt < SENT_CARD_MS : false;
-    const card: 'talk' | 'notice' | 'answer' | 'sent' | 'hint' | null =
+    const card: 'talk' | 'notice' | 'answer' | 'drive' | 'sent' | 'hint' | null =
         phase === 'listening' ? 'talk' :
             notice ? 'notice' :
                 answer ? 'answer' :
-                    task && (sentFresh || hover) ? 'sent' :
-                        hover && phase === 'idle' ? 'hint' : null;
+                    drive ? 'drive' :
+                        task && (sentFresh || hover) ? 'sent' :
+                            hover && phase === 'idle' ? 'hint' : null;
     // While it works, the agents on it peek out beside the Captain.
     const teamFaces = (task && card !== 'sent' ? (task.team.length ? task.team.map((h) => orb.directory.agents.find((a) => a.handle === h)) : [agentByName(task.lead)]) : []).
         filter((a): a is DirectoryAgent => Boolean(a && !a.isCoordinator)).slice(0, 3);
-    const label = phase === 'listening' ? 'Captain is listening. Let go to send.' : task ? 'Captain is working. Hover to see how it\'s going.' : `Captain: hold to talk, click to open.${orb.needsYou ? ` ${orb.needsYou} need you.` : ''}`;
+    const label = phase === 'listening' ? 'Captain is listening. Let go to send.' : drive ? `Captain is working on this Mac: ${drive.text}. Press Esc to stop.` : task ? 'Captain is working. Hover to see how it\'s going.' : `Captain: hold to talk, click to open.${orb.needsYou ? ` ${orb.needsYou} need you.` : ''}`;
     const sendWord = mode === 'type' ? 'type it' : 'send';
     const sendHint = how === 'hold' ? `Let go to ${sendWord}` : how === 'key' ? `Let go to ${sendWord}` : `Click again to ${sendWord}`;
 
@@ -864,6 +882,23 @@ export function Orb() {
                                 <button type='button' className='fc-btn fc-btn-ghost' onPointerDown={(e) => e.stopPropagation()} onClick={() => void sayAnswer(answer.text)}>Read it to me</button>
                             )}
                         </div>
+                    </div>
+                )}
+
+                {card === 'drive' && drive && (
+                    <div className='fc-card fc-drive' style={{width: 360, gap: 8}}>
+                        <div style={{display: 'flex', alignItems: 'center', gap: 10}}>
+                            <span className='fc-icon-tile' style={{width: 30, height: 30}}><MousePointerClick size={16}/></span>
+                            <div style={{display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flex: 1}}>
+                                <span style={{fontSize: 14.5, fontWeight: 800}}>Working on this Mac</span>
+                                <span style={{fontSize: 12.5, fontWeight: 600, color: '#4f5c78', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{drive.text}</span>
+                            </div>
+                            <button type='button' className='fc-btn fc-btn-ghost' onPointerDown={(e) => e.stopPropagation()} onClick={() => {
+                                void emitTo('main', 'orb-stop-drive', {});
+                                setDrive(null);
+                            }}>Stop</button>
+                        </div>
+                        <div className='fc-foot'>Hands off the mouse and keyboard while it works. <span className='fc-kbd'>Esc</span> stops it any time.</div>
                     </div>
                 )}
 

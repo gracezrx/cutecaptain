@@ -90,7 +90,8 @@
       "resources/extension": "extension"
     },
     "externalBin": [
-      "binaries/captain-voice"
+      "binaries/captain-voice",
+      "binaries/captain-desk"
     ]
   }
 }

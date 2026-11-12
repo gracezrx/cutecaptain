@@ -150,8 +150,18 @@ The app carries the server and runs it with the Mac's Node.js (22 or newer), on 
   - **Drag** it anywhere; it settles on the nearest edge. **Right-click** for English or 中文, spoken answers on or off, or hide. The menu bar menu brings it back.
   - A gold count shows how many things need you.
 - **How voice works:** the app carries a small helper, `captain-voice` (`src-tauri/voice/main.swift`). It uses Apple's speech recognition, on the Mac itself when the language allows, and Apple's voices to read answers aloud. macOS asks once for Microphone and Speech Recognition. Download better voices in System Settings → Accessibility → Spoken Content → System voice → Manage Voices.
-- Building the app yourself needs Xcode's command-line tools for the helper (`npm run build:voice`, run automatically by `tauri build`).
+- Building the app yourself needs Xcode's command-line tools for the helpers (`npm run build:voice`, run automatically by `tauri build`).
 - To use a hosted server instead, choose **A Captain server** on the sign-in screen.
+
+### Agents on this Mac (computer use)
+
+While Captain is open, agents you ask can work on your Mac: see the screen, read the app in front as text, click, type, press keys, open apps, files and addresses, and read or set the clipboard. Tell the little Captain "grab the total from my spreadsheet and email it to Sam" and it carries the task through on your screen.
+
+- **Turn it on:** Settings → This Mac → **Agents on this Mac** (on by default once the permissions are granted), or the setup guide's **Agents on this Mac** step. It needs two permissions for Captain: **Accessibility** (to click, type and read apps) and **Screen Recording** (to see the screen). Settings shows which are on, with a button to the right page of System Settings, and a test that shows what Captain sees. Captain's own windows are left out of what it sees, so an agent never clicks Captain itself.
+- **Asking you:** the first time a task needs the Mac, a decision card asks once ("Let Captain use Grace's MacBook for this task"); approve it in the panel, the thread or the little Captain. **Hands-free** (Settings → This Mac) skips that question. Either way, sending, paying, deleting and posting still ask first unless your request plainly said to do it.
+- **While it works:** the little Captain shows each step ("Opening Numbers", "Typing…"). Keep your hands off the mouse and keyboard. **Esc** in any app, or Stop on the card, stops the run at once.
+- **How it works:** the app carries a second helper, `captain-desk` (`src-tauri/desk/main.swift`). The dashboard window registers this Mac as a device over its connection to the server; each tool call an agent makes (`computer_screenshot`, `computer_click`, …) is relayed to the Mac, done by the helper, and answered. The server offers the tools only while the Mac is online, only to agents with **Use the person's Mac** on (Settings → Agents; Captain and Researcher by default), and only for the person who asked. Server limits: `AGENT_MAX_COMPUTER_ROUNDS` (80) actions per step.
+- **Chrome too:** with the extension's **Let agents use this Chrome** on (see below), agents get `browser_*` tools and prefer them for web pages; without it they drive Chrome through the screen like any other app.
 
 ### Build it yourself
 
@@ -193,9 +203,11 @@ Install from the Mac app: setup guide → **The Chrome extension** → **Show th
 - **Right-click → Send to Captain:** a page, a link, selected text, an image, or a screenshot of the tab.
 - **Badge:** decisions and mentions waiting for you, checked every minute.
 - **Server:** it signs in to the Mac app's built-in server (**This Mac**) or to a hosted one, which Chrome asks to allow at sign-in.
+- **Let agents use this Chrome** (a switch in the popup): this Chrome registers as a device, and agents you ask can open pages, read them as numbered elements, click, type (in rich editors too: Gmail, ChatGPT, Docs), press keys, choose in dropdowns, scroll and take screenshots, one action at a time, in a tab of their own or the one you're on. Turning it on asks Chrome once for permission on all sites and for the debugger (so Enter and shortcuts are real key presses; Chrome shows a "Captain started debugging this browser" bar while a key is pressed). The first time a task needs Chrome, a decision card asks you once; hands-free is per device in the Mac app's Settings → This Mac (or `PATCH /devices/:id`). The toolbar button's tooltip says what it's doing.
 - **Permissions:**
   - The popup reads only the tab you opened it on.
   - The side panel asks Chrome once for permission to read pages, the first time you use a page button there.
+  - "Let agents use this Chrome" asks for all sites and the debugger, from that click, and can be turned off again any time (chrome://extensions → Captain → Details to remove the permissions).
 
 ## Operating it
 

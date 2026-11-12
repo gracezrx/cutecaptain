@@ -502,6 +502,7 @@ export async function typeInto(pid: number, text: string): Promise<void> {
 }
 
 export const ACCESSIBILITY_SETTINGS = 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility';
+export const SCREEN_RECORDING_SETTINGS = 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture';
 
 // Esc cancels while Captain listens or speaks, whichever app is in front.
 export async function orbEscape(active: boolean): Promise<void> {

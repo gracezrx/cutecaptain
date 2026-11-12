@@ -13,8 +13,8 @@ Anything that leaves the workspace, such as an email, waits for a person to appr
 
 It comes in four parts:
 
-- **A Mac app**: a dashboard window, plus a frosted panel that drops down from the menu bar. Press **⌃⇧C** anywhere to write to any chat, snap your screen, talk instead of type, or approve what an agent wants to do. A little Captain floats over your work: hold it (or **⌃⇧Space**) and say what you need. It sends it to the chat and agents you named, shows the steps as they go, and reads the answer out loud. It can also type what you say into any app. The app can run the Captain server itself, so nothing else needs installing.
-- **A Chrome extension**: a toolbar popup and a side panel with the same compact view. It can send the page you're on, selected text or a screenshot to a chat, let agents read the page when you click, and approve decisions.
+- **A Mac app**: a dashboard window, plus a frosted panel that drops down from the menu bar. Press **⌃⇧C** anywhere to write to any chat, snap your screen, talk instead of type, or approve what an agent wants to do. A little Captain floats over your work: hold it (or **⌃⇧Space**) and say what you need. It sends it to the chat and agents you named, shows the steps as they go, and reads the answer out loud. It can also type what you say into any app. **Agents can use the Mac itself**: say "grab the total from my spreadsheet, run it through ChatGPT and send it from Gmail" and Captain opens the apps, reads them, clicks and types until it's done, with the little Captain showing each step and Esc to stop. The app can run the Captain server itself, so nothing else needs installing.
+- **A Chrome extension**: a toolbar popup and a side panel with the same compact view. It can send the page you're on, selected text or a screenshot to a chat, let agents read the page when you click, and approve decisions. With **Let agents use this Chrome** on, agents open pages, read them, click and type in your Chrome directly (Gmail, Sheets, ChatGPT, anything).
 - **A web app** with the same interface, so testers can use a browser.
 - **A server** that does everything else: accounts, workspaces, chat, real time, model routing and multi-agent orchestration. It runs inside the Mac app, or hosted for a whole team.
 
@@ -66,6 +66,10 @@ It was filmed on the real app. The agents' answers are scripted best-case replie
 - **Real files**
   - Agents write documents as Word files with a PDF copy, decks as PowerPoint (native charts and tables), and spreadsheets as Excel (typed columns, SUM totals), all in Captain's navy and gold.
   - With Google connected, each is also made in Google Docs, Slides or Sheets, in a "Captain › chat name" folder in your Drive.
+- **Your Mac and your Chrome, for agents** (computer use)
+  - While the Mac app is open, agents see your screen, read the app in front as text (every button, field and cell, with positions), click, drag, scroll, type, press keys, open apps and addresses, and use the clipboard. With the extension's switch on, they also work in Chrome by page element: open, read, click, type (in rich editors too), press, choose, scroll, screenshot.
+  - Asked once per task ("Let Captain use your Mac for this task"), or hands-free per device. Sending, paying, deleting and posting still ask unless you said to. Esc stops it any time.
+  - Only while you're online, only for you, only for agents with it switched on (Captain and Researcher by default).
 - **Connections**
   - Google apps (Gmail, Drive, Docs, Sheets, Calendar, Slides) through Composio.
   - MCP servers: Granola, Notion and Linear in one click, or any remote MCP server by its address. Each person connects their own; agents read without asking and ask before changing anything.
@@ -82,6 +86,7 @@ It was filmed on the real app. The agents' answers are scripted best-case replie
   - Monthly budgets and a cost ledger per workspace.
   - Model keys pasted in Settings by whoever runs the server, stored encrypted and tried before they're saved.
 - **Mac-only features**
+  - agents working on the Mac (needs Accessibility and Screen Recording)
   - menu bar panel and global shortcut
   - screen and region snapshots
   - voice typing (English or Chinese)
@@ -128,7 +133,7 @@ The server runs on any Postgres 14 or newer, including Supabase ([docs/DEPLOY.md
 cd server && npm test     # needs a captain_test database
 ```
 
-The 114 tests cover:
+The 122 tests cover:
 
 - accounts, invites, roles and password resets
 - private channels and DMs
@@ -144,6 +149,7 @@ The 114 tests cover:
 - security: what agents may quote where, links that need approval, blocked private addresses, approvals that run once, revoked invites and sessions, forged client addresses
 - real files (Word, PDF, PowerPoint, Excel) and their Google copies, filed in Drive
 - Google apps and MCP servers: sign-in (OAuth with PKCE, once per link), reading without asking, approval before changes, refreshing an expired sign-in, keeping connections to their owner
+- devices (a Mac, a Chrome): registering over the socket and going offline, tools offered only while online and only to their owner, asking once per task, hands-free, screenshots reaching a vision model, a failing or silent device, stopping a run, answering over HTTP
 - reminders and expiry for unanswered decisions, Crew reactions, token use per chat
 
 ## Background

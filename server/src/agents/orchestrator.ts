@@ -39,6 +39,8 @@ import {onOwnAccount} from '../connectors/composio.js';
 
 import {makePlan} from './planner.js';
 import {agentSystem, type Setting, stepSystem, synthesisSystem} from './prompts.js';
+import {releaseDevices} from '../app/devices.js';
+
 import {CancelledError, friendlyError, runAgent, type RunnerOutcome, type StepState} from './runner.js';
 import {chooseTier} from './tiering.js';
 import {toolsFor} from './tools/index.js';
@@ -97,6 +99,9 @@ export class Orchestrator {
 
     async publishRun(run: RunRow): Promise<void> {
         await publishToChannel(this.ctx, this.ctx.sql, run.channelId, {event: 'run_updated', data: {runId: run.id, channelId: run.channelId, status: run.status, triggerPostId: run.triggerPostId}});
+        if (TERMINAL_RUN.includes(run.status)) {
+            await releaseDevices(this.ctx, run).catch(() => undefined);
+        }
         await this.markTrigger(run).catch((err) => log.warn({err: (err as Error).message, runId: run.id}, 'couldn\'t update the working reaction'));
         if (run.cardPostId) {
             const steps = await listSteps(this.ctx.sql, run.id);
@@ -311,7 +316,7 @@ export class Orchestrator {
         if (!trigger) {
             throw new Error('the message that started this run is gone');
         }
-        const tools = toolsFor(agent).map((t) => t.name);
+        const tools = toolsFor(agent).filter((t) => !t.marker).map((t) => t.name);
         if (run.kind === 'single') {
             const convo = await conversation(this.ctx, setting.channel, trigger, agent.userId);
             return {messages: [{role: 'system', content: agentSystem(agent, setting, tools)}, ...convo.messages], text: convo.text, hasImages: convo.hasImages};

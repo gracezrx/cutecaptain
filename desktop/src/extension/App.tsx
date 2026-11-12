@@ -2,7 +2,7 @@
 // panel (write, inbox, decide in place), in the toolbar popup and in Chrome's
 // side panel, plus buttons that bring the current page into a message.
 
-import {BookOpen, Link2, PanelRight, TextQuote} from 'lucide-react';
+import {BookOpen, Link2, MousePointerClick, PanelRight, TextQuote} from 'lucide-react';
 import {useEffect, useState} from 'react';
 
 import {AuthScreen} from '../components/AuthScreen';
@@ -69,7 +69,7 @@ export function ExtensionApp() {
                 target={target}
                 setTarget={setTarget}
                 extras={{
-                    tools: <PageTools onAdd={setIncoming}/>,
+                    tools: <><PageTools onAdd={setIncoming}/><AgentsInChrome/></>,
                     incoming,
                     header: extensionSurface === 'popup' ? <SidePanelButton/> : null,
                     hints: HINTS,
@@ -158,6 +158,48 @@ function PageTools({onAdd}: {onAdd: (i: Incoming) => void}) {
                 </button>
             </div>
             {note && <p className='mt-1.5 px-1 text-[12px] text-alert'>{note}</p>}
+        </div>
+    );
+}
+
+// "Let agents use this Chrome": with it on, the background worker registers
+// this Chrome as a device, and agents you ask can open pages, read them,
+// click and type here. Needs permission for all sites (to work on any page)
+// and the debugger (so Enter and shortcuts are real key presses); Chrome asks
+// once, from this click.
+const KEY_AGENTS = 'captain.agents';
+
+function AgentsInChrome() {
+    const [on, setOn] = useState<boolean | null>(null);
+    const [note, setNote] = useState<string | null>(null);
+    const ready = useStore((s) => s.ready);
+    useEffect(() => {
+        void chrome.storage.local.get(KEY_AGENTS).then((v) => setOn(v[KEY_AGENTS] === true));
+    }, []);
+    if (!ready || on === null) {
+        return null;
+    }
+    return (
+        <div className='mb-2 px-1'>
+            <label className='flex cursor-pointer items-center gap-2 text-[12px] font-semibold text-text'>
+                <input type='checkbox' className='size-3.5 accent-[var(--accent)]' checked={on} onChange={async (e) => {
+                    const want = e.target.checked;
+                    setNote(null);
+                    if (want) {
+                        const granted = await chrome.permissions.request({permissions: ['debugger'], origins: ['<all_urls>']}).catch(() => false);
+                        if (!granted) {
+                            setNote('Captain needs permission to work on pages. Try again and choose Allow.');
+                            return;
+                        }
+                    }
+                    setOn(want);
+                    await chrome.storage.local.set({[KEY_AGENTS]: want});
+                }}/>
+                <MousePointerClick size={13} className='text-muted'/>
+                Let agents use this Chrome
+            </label>
+            <p className='mt-0.5 pl-6 text-[11px] text-muted'>{on ? 'Agents you ask can open pages, read them, click and type here. The first time a task needs Chrome, a card asks you once.' : 'Off: agents can read pages only when you send them one.'}</p>
+            {note && <p className='mt-1 pl-6 text-[11.5px] text-alert'>{note}</p>}
         </div>
     );
 }

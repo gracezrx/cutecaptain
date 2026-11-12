@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "cutecaptain",
   "version": "0.1.0",
-  "description": "Send pages to your team and agents, approve what agents want to do, and chat with Captain next to any tab.",
+  "description": "Send pages to your team and agents, approve what agents want to do, chat with Captain next to any tab, and let agents work in your Chrome.",
   "icons": {"16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png"},
   "action": {
     "default_title": "cutecaptain",
@@ -11,7 +11,8 @@
   },
   "side_panel": {"default_path": "extension/sidepanel.html"},
   "background": {"service_worker": "background.js", "type": "module"},
-  "permissions": ["storage", "contextMenus", "sidePanel", "activeTab", "scripting", "alarms"],
+  "permissions": ["storage", "contextMenus", "sidePanel", "activeTab", "scripting", "alarms", "tabs"],
+  "optional_permissions": ["debugger"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
   "optional_host_permissions": ["<all_urls>"],
   "commands": {

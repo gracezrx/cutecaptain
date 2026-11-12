@@ -74,7 +74,40 @@ export function plannerSystem(captain: AgentRow, team: AgentRow[], s: Setting, m
         '- {"mode":"direct"} when one agent can answer well in one go: questions, quick drafts, small talk, follow-ups.',
         `- {"mode":"plan","goal":"one line","steps":[{"id":"s1","agent":"researcher","title":"Short title","instructions":"What to do and what to hand back","dependsOn":[]}]} when the work has distinct parts that benefit from different specialists. Use 2 to ${maxSteps} steps.`,
         'Steps with no dependencies run at the same time; a step sees the outputs of the steps it depends on. Use only handles from the list. Put the step that produces the final deliverable last.',
+        'Work on the person\'s own screen or browser (opening their apps, reading their spreadsheets, sending from their Gmail, running something in a web app) can\'t happen in parallel: there is one mouse. Keep such work in one step, or chain the steps with dependsOn. Give it to an agent that can use the computer (Captain or Researcher unless told otherwise).',
     ].join('\n');
+}
+
+// Added to an agent's system prompt while the person's Mac or Chrome is
+// connected (see tools/device.ts). Starts with the marker runner.ts looks for.
+export function deviceGuide(devices: {kind: 'mac' | 'chrome'; name: string}[], personName: string): string {
+    const mac = devices.find((d) => d.kind === 'mac');
+    const chrome = devices.find((d) => d.kind === 'chrome');
+    const what = [mac ? `Mac (${mac.name})` : '', chrome ? 'Chrome' : ''].filter(Boolean).join(' and ');
+    const lines = [
+        '',
+        `## Using ${personName}'s ${what}`,
+        `${personName}'s own computer is connected: you can work on it directly, as if sitting at it. Use this whenever the task involves their apps, files, web accounts or anything on their screen ("grab the numbers from my spreadsheet", "run this in ChatGPT", "send it from Gmail"). Carry the whole task through to the end yourself, without stopping to ask what to do next: ${personName} is probably not watching, and wants to come back to it done.`,
+        '',
+        'How to work:',
+    ];
+    if (chrome) {
+        lines.push('- Web pages: use the browser_* tools. browser_snapshot gives every link, button and field an id like [e12]; click and type by those ids, then snapshot again to see the result. browser_read gives a page\'s text. Web apps work this way too (Gmail, Google Sheets, ChatGPT, Notion…): find the field by its id, type, press Enter or click the button.');
+    }
+    if (mac) {
+        lines.push(`- The screen: computer_read_screen gives the app in front as text (every button, field, cell and text block with its position); it is faster and more exact than looking, so prefer it for reading spreadsheets, documents, lists and dialogs and for finding where to click. computer_screenshot shows the real picture; use it to confirm what you see, and computer_zoom for small text. Coordinates are pixels in the latest screenshot.${chrome ? ' Use the screen tools for Chrome only when the browser tools can\'t do it.' : ' Chrome isn\'t connected as a device, so use the screen tools for web pages too: open Chrome with computer_open, press cmd+l, type the address, enter.'}`);
+        lines.push('- Entering text: click the field first, then computer_type. For long text, computer_clipboard write + cmd+v is faster. Keyboard shortcuts (cmd+l, cmd+f, cmd+c, cmd+v, enter, tab) are usually more reliable than clicking around.');
+        lines.push('- Apps: computer_open opens any app, address or file; computer_apps shows what\'s open; computer_focus switches.');
+    }
+    lines.push(
+        '- Look, act, look again. After each click or typing, check that it did what you meant (snapshot or read the screen) before going on. If it didn\'t, try another way (a shortcut, a menu, another element, scrolling) rather than repeating the same action more than twice. If a page is loading, wait a moment and look again.',
+        '- Keep your eyes on the goal: note what you\'ve learned (numbers you read, text you copied) in your own words as you go, so you can use it in later steps and in your answer.',
+        `- Before anything that can\'t be undone or that leaves the computer (sending an email or message, submitting a payment or order, deleting, posting publicly), use request_approval and wait, unless ${personName}\'s request plainly asked for exactly that ("send it to Sam", "post it") — then do it, and say so.`,
+        '- Never type or read passwords, never change system settings or security prompts, and do nothing beyond what was asked. Leave the person\'s work as you found it where you can (close tabs you opened only if they asked).',
+        '- If a tool says a permission is missing or the device is offline, tell the person exactly what to turn on (Settings → This Mac) and stop.',
+        '- When done, answer with the result itself (the numbers, the text, the confirmation you saw) plus a short line on what you did. Don\'t narrate every click.',
+    );
+    return lines.join('\n');
 }
 
 export function stepSystem(agent: AgentRow, s: Setting, toolNames: string[], goal: string, step: {title: string; instructions: string}): string {

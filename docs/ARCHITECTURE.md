@@ -118,6 +118,37 @@ flowchart TD
 - **Context** (`agents/history.ts`): the thread, the recent DM, or recent channel messages as background, plus images and text files. Agents read only what the person who asked can read.
 - **Jobs**: each phase is a durable job. If a server dies mid-step, its lease runs out and another server reruns the step. The half-written message is marked as interrupted.
 
+## Devices: agents on your Mac and in your Chrome
+
+A **device** is the Mac app or the Chrome extension, registered over the socket it already holds (`{action: "device_register"}` after `hello`; the hub answers with the device's id, which the device keeps). While one is online, `agents/tools/device.ts` gives agents working for that person `computer_*` tools (a Mac) or `browser_*` tools (Chrome), limited to the capabilities the device announced.
+
+```mermaid
+sequenceDiagram
+    participant M as Model
+    participant R as Runner
+    participant D as Devices (app/devices.ts)
+    participant DB as Postgres
+    participant H as Hub
+    participant Mac as Mac app / Chrome
+    M->>R: tool call computer_click {x, y}
+    R->>D: request(device, tool, args)
+    D->>DB: insert device_requests (pending)
+    D->>H: device_request → the person's connections
+    H->>Mac: event (only the named device acts)
+    Mac->>Mac: captain-desk click (points) / page script
+    Mac->>H: {action: "device_result"}
+    H->>D: answered → update row, NOTIFY captain_device
+    D-->>R: {text, images}
+    R->>M: tool result, then the screenshot in a user turn
+```
+
+- **One at a time.** Requests to a device are queued per device (one mouse), each with a timeout (30 s; 45–60 s for looking, typing and opening). Stopping the run aborts the tool's signal, which marks the request cancelled.
+- **Across servers.** The request is a row; the device answers over its socket to whichever server holds it (or over HTTP between reconnects); that server updates the row and `NOTIFY`s, and the waiting tool (which also polls) picks it up.
+- **Asking once.** `needsApproval` on every device tool is true until the person approves the first one in the run (a `device_grants` row) or the device is on autopilot. The approval card names the agent and the device and says Esc stops it.
+- **Screens.** A `ToolResult` can carry `images` (data URLs). The runner shows them to the model in a user turn right after the tool results (tool messages can only be text), marks the step as needing a vision model, keeps only the last three screenshots in the conversation, and leaves them out of saved transcripts. Steps that have device tools get `AGENT_MAX_COMPUTER_ROUNDS` tool rounds instead of `AGENT_MAX_TOOL_ROUNDS`. The system prompt gets a guide (`prompts.ts` → `deviceGuide`) on how to look, act and check, when to ask, and what never to do.
+- **On the Mac.** The dashboard window (`src/lib/device.ts`) carries out each request with `src/lib/computer.ts`, which calls the `captain-desk` helper (`src-tauri/desk/main.swift`) through `desk_run` in `lib.rs`: screenshots without Captain's own windows, a region close-up, the Accessibility tree of the app in front (with positions), clicks, drags, scrolls, keys, Unicode typing, opening and focusing apps, the clipboard. The model works in the pixels of its latest screenshot (at most 1440 wide); `computer.ts` converts to screen points and back. The orb shows each step (`device-activity`) and Esc (`drive_escape`) or Stop ends the run.
+- **In Chrome.** The background worker (`src/extension/background.ts`) keeps the socket while "Let agents use this Chrome" is on and does each request with `src/extension/browser.ts`: a page snapshot gives every link, button and field an id (`e12`) kept in the page's isolated world; clicks dispatch the pointer/mouse/click sequence on the element; typing uses `execCommand('insertText')` (works in rich editors) with a native-setter fallback; keys go through Chrome's debugger when granted, else DOM events (Enter submits a form).
+
 ## Model router
 
 `llm/router.ts`, `llm/catalog.ts`, `config/models.json`, following Captain's Smart Router:
@@ -138,6 +169,7 @@ Tables, created by the numbered files in `src/db/migrations/`:
 - people and access: `users` (`instance_admin` marks who runs the server), `sessions`, `password_resets`, `workspaces`, `workspace_members`, `invites`
 - chat: `channels`, `channel_members`, `posts` (with a generated full-text `search` column), `reactions`, `files`
 - agents: `agents`, `runs`, `run_steps`, `approvals`
+- devices: `devices`, `device_requests`, `device_grants`
 - models: `usage_events`, `provider_keys` (encrypted keys pasted in Settings)
 - infrastructure: `jobs`, `realtime_outbox`, `audit_log`
 
@@ -167,6 +199,7 @@ Agent messages carry `props.model` (the model id, provider, tier and cost) and, 
   - `screencapture` snapshots
   - notification banners that open the right thread
   - the session and the built-in server's database address, in a file only you can read (`secrets.json` in the app's settings folder)
+  - `desk_run`: one call to the `captain-desk` helper, for agents working on this Mac (see Devices)
 
 ## Scaling and availability
 

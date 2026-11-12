@@ -4,6 +4,7 @@
 // own socket.
 
 import {plain} from '../components/Markup';
+import {deviceOffline, deviceOnline, deviceRegistered, handleDeviceEvent, startDeviceLink} from './device';
 import {isTauri, notify, onRelayedEvent, relayToPanel, setBadge, windowLabel} from './native';
 import {Socket} from './socket';
 import {agentForUser, canDecide, channelTitle, decisionOf, displayName, needsYou, useStore} from './store';
@@ -33,13 +34,27 @@ export function startRealtime(): () => void {
             handleEvent(e, sendsNotifications);
             void relayToPanel(e);
         },
-        onState: (state) => useStore.getState().setConnection(state),
+        onState: (state) => {
+            useStore.getState().setConnection(state);
+            // This Mac registers as a device on every new connection.
+            if (state === 'online') {
+                void deviceOnline();
+            } else {
+                deviceOffline();
+            }
+        },
         onResync: () => {
             void resync();
             void relayToPanel({event: 'resync'});
         },
+        onReply: (r) => {
+            if (r.status === 'OK' && typeof r.data?.deviceId === 'string') {
+                void deviceRegistered(r.data.deviceId);
+            }
+        },
     });
     socket.open();
+    const stopDevice = startDeviceLink((m) => socket?.send(m), () => socket?.reconnect());
 
     let lastBadge = -1;
     const unsubscribe = useStore.subscribe((s) => {
@@ -52,6 +67,7 @@ export function startRealtime(): () => void {
 
     return () => {
         unsubscribe();
+        stopDevice();
         socket?.close();
         socket = null;
     };
@@ -82,6 +98,9 @@ export function sendTyping(channelId: string, rootId: string | null): void {
 const streamed = new Set<string>(); // agent replies we saw being written, to announce when done
 
 function handleEvent(msg: ServerEvent, sendsNotifications: boolean): void {
+    if (handleDeviceEvent(msg)) {
+        return;
+    }
     const store = useStore.getState();
     const me = store.me;
     switch (msg.event) {

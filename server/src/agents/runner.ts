@@ -8,7 +8,7 @@ import {postEdited} from '../app/events.js';
 import {savePost} from '../app/posts.js';
 import {config} from '../config.js';
 import type {Purpose} from '../llm/router.js';
-import {type ChatMessage, LlmError, type ToolCall} from '../llm/types.js';
+import {type ChatMessage, type ContentPart, LlmError, type ToolCall} from '../llm/types.js';
 import type {DecisionCard, ModelAttribution, PostProps, PostType, Tier} from '../shared/types.js';
 import type {AgentRow} from '../store/agents.js';
 import {type ChannelRow, listChannelMemberIds} from '../store/channels.js';
@@ -23,6 +23,8 @@ import {withoutImageData} from './history.js';
 import {mcpTools} from '../connectors/mcp/tools.js';
 import {connectorTools} from '../connectors/tools.js';
 
+import {deviceGuide} from './prompts.js';
+import {deviceTools, isDeviceTool} from './tools/device.js';
 import {getTool, toolDefs, toolsFor} from './tools/index.js';
 import {linksIn} from './tools/web.js';
 import type {Tool, ToolContext} from './tools/types.js';
@@ -92,16 +94,27 @@ export function friendlyError(e: unknown): string {
 export async function runAgent(input: RunnerInput): Promise<RunnerOutcome> {
     const {ctx, run, agent, agentUser, channel, requester} = input;
     const state: StepState = {messages: [...input.state.messages], pending: [...input.state.pending], fileIds: [...input.state.fileIds]};
-    // Its own tools, plus the Google apps the person it works for connected.
-    const [google, mcp] = input.useTools ?
-        await Promise.all([connectorTools(ctx, requester, channel.workspaceId), mcpTools(ctx, requester, channel.workspaceId)]) :
-        [[], []];
-    const tools = [...(input.useTools ? toolsFor(agent) : []), ...google, ...mcp];
+    // Its own tools, plus the Google apps and MCP servers the person it works
+    // for connected, plus their Mac and Chrome while those are online.
+    const [google, mcp, device] = input.useTools ?
+        await Promise.all([connectorTools(ctx, requester, channel.workspaceId), mcpTools(ctx, requester, channel.workspaceId), deviceTools(ctx, requester, agent, run.id)]) :
+        [[], [], {tools: [], devices: []}];
+    const tools = [...(input.useTools ? toolsFor(agent) : []).filter((t) => !t.marker), ...google, ...mcp, ...device.tools];
     const allowed = new Set(tools.map((t) => t.name));
     const byName = new Map(tools.map((t) => [t.name, t]));
     const lookup = (name: string): Tool | undefined => byName.get(name) ?? getTool(name);
     let costUsd = 0;
     let model: ModelAttribution | null = null;
+    // Screenshots make the rest of the step a vision job.
+    let needVision = input.needVision;
+    // Images that tools returned since the model last looked.
+    let freshImages: string[] = [];
+
+    // Working on a screen takes many small steps; plain tool use takes few.
+    const rounds = Math.max(1, device.tools.length ? config.agents.maxComputerRounds : config.agents.maxToolRounds);
+    if (device.tools.length) {
+        addDeviceGuide(state.messages, deviceGuide(device.devices.map((d) => ({kind: d.kind, name: d.name})), requester.displayName));
+    }
 
     // The reply message, created up front so people see the agent working.
     let postId: string | null = null;
@@ -214,7 +227,11 @@ export async function runAgent(input: RunnerInput): Promise<RunnerOutcome> {
         try {
             const res = await tool.run(toolContext(), args);
             state.fileIds.push(...(res.fileIds ?? []));
-            return res.content.slice(0, 20_000);
+            if (res.images?.length) {
+                freshImages.push(...res.images);
+                needVision = true;
+            }
+            return res.content.slice(0, isDeviceTool(tool.name) ? 60_000 : 20_000);
         } catch (e) {
             if (input.signal.aborted) {
                 throw new CancelledError();
@@ -297,18 +314,21 @@ export async function runAgent(input: RunnerInput): Promise<RunnerOutcome> {
             }
         }
 
-        const rounds = Math.max(1, config.agents.maxToolRounds);
         for (let round = 0; ; round++) {
             if (input.signal.aborted) {
                 throw new CancelledError();
             }
             const lastRound = round >= rounds;
+            if (freshImages.length) {
+                showImages(state.messages, freshImages);
+                freshImages = [];
+            }
             const res = await ctx.router.complete({
                 workspaceId: channel.workspaceId,
                 purpose: input.purpose,
                 tier: input.tier,
                 pinnedModel: agent.model,
-                needVision: input.needVision,
+                needVision,
                 messages: state.messages,
                 tools: tools.length && !lastRound ? toolDefs(tools) : undefined,
                 signal: input.signal,
@@ -327,7 +347,7 @@ export async function runAgent(input: RunnerInput): Promise<RunnerOutcome> {
                 }
                 continue;
             }
-            const text = res.text.trim() || (state.fileIds.length ? 'Here it is.' : '(No answer.)');
+            const text = res.text.trim() || (state.fileIds.length ? 'Here it is.' : lastRound && device.tools.length ? 'I ran out of steps before finishing. Here is where I got to; tell me to go on and I\'ll pick it up from here.' : '(No answer.)');
             state.messages.push({role: 'assistant', content: text});
             const id = await finalize(text);
             return {kind: 'done', text, postId: id, fileIds: state.fileIds, costUsd, modelId: model.id};
@@ -346,4 +366,40 @@ export async function runAgent(input: RunnerInput): Promise<RunnerOutcome> {
         }
         throw e;
     }
+}
+
+// ------------------------------------------------------------ screens in the conversation
+
+const GUIDE_MARK = '\n\n## Using ';
+const KEEP_IMAGES = 3;
+const SCREEN_NOTE = '[The screen after your last actions, latest last. Coordinates you give are pixels in the latest image.]';
+const OLD_SCREEN = '[an earlier screenshot, no longer shown]';
+
+// The system prompt gets the device guide once (a resumed transcript already has it).
+function addDeviceGuide(messages: ChatMessage[], guide: string): void {
+    const first = messages[0];
+    if (first?.role === 'system' && !first.content.includes(GUIDE_MARK)) {
+        first.content += guide;
+    }
+}
+
+// Tool results can only be text, so screenshots go in a user turn right after
+// them. Only the last few stay in the conversation: screens are big, and old
+// ones mislead.
+function showImages(messages: ChatMessage[], images: string[]): void {
+    let kept = 0;
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role !== 'user' || !Array.isArray(m.content)) {
+            continue;
+        }
+        m.content = m.content.map((p) => {
+            if (p.type !== 'image_url') {
+                return p;
+            }
+            kept++;
+            return kept + images.length > KEEP_IMAGES ? {type: 'text', text: OLD_SCREEN} : p;
+        });
+    }
+    messages.push({role: 'user', content: [{type: 'text', text: SCREEN_NOTE}, ...images.slice(-KEEP_IMAGES).map((url): ContentPart => ({type: 'image_url', image_url: {url}}))]});
 }

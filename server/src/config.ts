@@ -109,6 +109,9 @@ export const config = {
         maxParallelSteps: int('AGENT_MAX_PARALLEL', 3),
         maxSteps: int('AGENT_MAX_PLAN_STEPS', 6),
         maxToolRounds: int('AGENT_MAX_TOOL_ROUNDS', 6),
+        // When an agent works on a person's screen or browser: each look, click
+        // or keystroke is a round, so a real task takes dozens.
+        maxComputerRounds: int('AGENT_MAX_COMPUTER_ROUNDS', 80),
         // Captain joining group chats unasked: how long it waits first, and how
         // long before it joins in the same chat again.
         joinInDelayMs: int('CAPTAIN_JOIN_IN_DELAY_MS', 4000),

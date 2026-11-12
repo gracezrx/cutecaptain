@@ -9,7 +9,7 @@
 
 import type {WebSocket} from 'ws';
 
-import type {ClientMessage, EventEnvelope, ServerEvent} from '../shared/types.js';
+import type {ClientMessage, DeviceRegistration, EventEnvelope, ServerEvent} from '../shared/types.js';
 import {newId} from '../util/ids.js';
 import {log} from '../util/log.js';
 
@@ -27,6 +27,7 @@ type Conn = {
     buffer: EventEnvelope[];
     alive: boolean;
     disconnectedAt: number | null;
+    device: string | null; // the device id this socket registered as
 };
 
 export type PublishOptions = {droppable?: boolean; exceptConnectionId?: string};
@@ -37,6 +38,11 @@ export type HubDeps = {
     validSessions?: (sessionIds: string[]) => Promise<Set<string>>;
     onTyping: (userId: string, channelId: string, rootId: string | null, connectionId: string) => Promise<void>;
     forward?: (userIds: string[], event: ServerEvent, opts: PublishOptions) => void; // to other nodes
+    // Devices (the Mac app, the Chrome extension) on this socket.
+    onDeviceRegister?: (userId: string, connectionId: string, device: DeviceRegistration) => Promise<{id: string} | {error: string}>;
+    onDeviceResult?: (userId: string, connectionId: string, requestId: string, ok: boolean, result: unknown, error: string | undefined) => Promise<void>;
+    onDeviceClosed?: (connectionId: string) => Promise<void>;
+    onDevicesAlive?: (connectionIds: string[]) => Promise<void>; // every sweep, the live sockets
 };
 
 export class Hub {
@@ -109,6 +115,19 @@ export class Hub {
                 ws.send(JSON.stringify({status: 'OK', seqReply: msg.seq, data: {text: 'pong', serverTime: Date.now()}}));
             } else if (msg.action === 'typing' && typeof msg.channelId === 'string') {
                 void this.deps.onTyping(conn.userId, msg.channelId, msg.rootId ?? null, conn.id).catch(() => undefined);
+            } else if (msg.action === 'device_register' && this.deps.onDeviceRegister && msg.device && typeof msg.device === 'object') {
+                const d = msg.device;
+                const reg: DeviceRegistration = {
+                    id: typeof d.id === 'string' && d.id ? d.id : null,
+                    kind: d.kind === 'chrome' ? 'chrome' : 'mac',
+                    name: String(d.name ?? '').slice(0, 80) || (d.kind === 'chrome' ? 'Chrome' : 'Mac'),
+                    capabilities: Array.isArray(d.capabilities) ? d.capabilities.filter((c): c is string => typeof c === 'string').slice(0, 100) : [],
+                };
+                const out = await this.deps.onDeviceRegister(conn.userId, conn.id, reg).catch((e: Error) => ({error: e.message}));
+                conn.device = 'id' in out ? out.id : null;
+                ws.send(JSON.stringify('id' in out ? {status: 'OK', seqReply: msg.seq, data: {deviceId: out.id}} : {status: 'FAIL', seqReply: msg.seq, error: out.error}));
+            } else if (msg.action === 'device_result' && this.deps.onDeviceResult && typeof msg.requestId === 'string') {
+                void this.deps.onDeviceResult(conn.userId, conn.id, msg.requestId, Boolean(msg.ok), msg.result, typeof msg.error === 'string' ? msg.error : undefined).catch(() => undefined);
             }
         });
         ws.on('pong', () => {
@@ -123,6 +142,11 @@ export class Hub {
             if (c) {
                 c.ws = null;
                 c.disconnectedAt = Date.now();
+                if (c.device) {
+                    // A device is only usable while its socket is up: it registers again on reconnect.
+                    c.device = null;
+                    void this.deps.onDeviceClosed?.(c.id).catch(() => undefined);
+                }
             }
         });
         ws.on('error', () => undefined);
@@ -143,7 +167,7 @@ export class Hub {
             conn.disconnectedAt = null;
             replayed = true;
         } else {
-            conn = {id: newId(), userId, sessionId, ws, seq: 0, buffer: [], alive: true, disconnectedAt: null};
+            conn = {id: newId(), userId, sessionId, ws, seq: 0, buffer: [], alive: true, disconnectedAt: null, device: null};
             this.conns.set(conn.id, conn);
             const set = this.byUser.get(userId) ?? new Set();
             set.add(conn.id);
@@ -228,6 +252,10 @@ export class Hub {
     private forget(c: Conn, reason: string): void {
         c.ws?.close(4001, reason);
         c.ws = null;
+        if (c.device) {
+            c.device = null;
+            void this.deps.onDeviceClosed?.(c.id).catch(() => undefined);
+        }
         this.conns.delete(c.id);
         const set = this.byUser.get(c.userId);
         set?.delete(c.id);
@@ -253,6 +281,10 @@ export class Hub {
     private sweep(): void {
         void this.revalidate();
         const t = Date.now();
+        const devices = [...this.conns.values()].filter((c) => c.ws && c.device).map((c) => c.id);
+        if (devices.length) {
+            void this.deps.onDevicesAlive?.(devices).catch(() => undefined);
+        }
         for (const c of this.conns.values()) {
             if (c.ws) {
                 if (!c.alive) {

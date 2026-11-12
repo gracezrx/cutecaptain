@@ -3,7 +3,7 @@
 // the app's settings folder on the Mac, and in local storage on the web.
 
 import {isExtension, isTauri, LOCAL_SERVER, secretDelete, secretGet, secretSet} from './native';
-import type {Agent, AgentTool, Channel, ChannelMember, ChannelUsage, McpConnections, McpServerInfo, Connections, Dashboard, FileInfo, InvitePreview, ModelInfo, Post, ProviderCheck, ProviderKeyInfo, Run, Session, UsageSummary, User, Workspace, WorkspaceMember, WorkspaceRole} from './types';
+import type {Agent, AgentTool, Channel, ChannelMember, ChannelUsage, McpConnections, McpServerInfo, Connections, Dashboard, Device, FileInfo, InvitePreview, ModelInfo, Post, ProviderCheck, ProviderKeyInfo, Run, Session, UsageSummary, User, Workspace, WorkspaceMember, WorkspaceRole} from './types';
 
 export type StoredSession = {serverUrl: string; token: string; userId: string};
 
@@ -251,6 +251,11 @@ export const api = {
     approvals: (wsId: string) => get<{id: string; channelId: string; postId: string | null; runId: string | null; title: string; requestedBy: string | null; createdAt: number}[]>(`/workspaces/${wsId}/approvals`),
     run: (id: string) => get<Run>(`/runs/${id}`),
     cancelRun: (id: string) => post<Run>(`/runs/${id}/cancel`),
+    // Your devices (this Mac, your Chrome) that agents can use.
+    devices: () => get<Device[]>('/devices'),
+    updateDevice: (id: string, body: {name?: string; autopilot?: boolean}) => patch<Device>(`/devices/${id}`, body),
+    removeDevice: (id: string) => del(`/devices/${id}`),
+    answerDevice: (id: string, requestId: string, body: {ok: boolean; result?: unknown; error?: string}) => post(`/devices/${id}/requests/${requestId}`, body),
 };
 
 export function errorMessage(e: unknown): string {

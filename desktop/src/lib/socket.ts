@@ -10,6 +10,8 @@ type Handlers = {
     onEvent: (e: ServerEvent) => void;
     onState: (s: 'connecting' | 'online' | 'offline') => void;
     onResync: () => void;
+    // The server's answer to something we sent (status OK/FAIL, seqReply, data).
+    onReply?: (r: {status: string; seqReply?: number; data?: Record<string, unknown>; error?: string}) => void;
 };
 
 export class Socket {
@@ -53,6 +55,18 @@ export class Socket {
         this.send({action: 'typing', channelId, rootId});
     }
 
+    get online(): boolean {
+        return this.ws?.readyState === WebSocket.OPEN;
+    }
+
+    // Drop the connection and make a new one (a device registration is per connection).
+    reconnect(): void {
+        if (this.closed) {
+            return;
+        }
+        this.ws?.close();
+    }
+
     private retryNow = () => {
         if (!this.ws || this.ws.readyState === WebSocket.CLOSED) {
             if (this.timer) {
@@ -83,6 +97,7 @@ export class Socket {
                 return;
             }
             if (!('event' in msg)) {
+                this.h.onReply?.(msg as {status: string});
                 return;
             }
             if (msg.seq >= 0) {

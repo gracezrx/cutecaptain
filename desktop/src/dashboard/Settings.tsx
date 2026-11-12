@@ -7,10 +7,12 @@ import {Avatar, PORTRAITS, portraitSrc} from '../components/Avatar';
 import {FieldLabel, ghostBtn, input, Modal, primaryBtn} from '../components/Modal';
 import {ShortcutRow} from '../components/ShortcutRow';
 import {api, errorMessage} from '../lib/api';
-import {isTauri, localServerRestart, openExternal, localServerStatus, type LocalServerStatus, setTalkButtonVisible, shortcutsGet, type ShortcutStatus, talkButtonVisible} from '../lib/native';
+import {permissions as deskPermissions, type Permissions, testScreenshot} from '../lib/computer';
+import {deviceEnabled, onDevices, refreshDevices, setDeviceEnabled, thisDeviceId} from '../lib/device';
+import {ACCESSIBILITY_SETTINGS, isTauri, localServerRestart, openExternal, localServerStatus, type LocalServerStatus, SCREEN_RECORDING_SETTINGS, setTalkButtonVisible, shortcutsGet, type ShortcutStatus, talkButtonVisible} from '../lib/native';
 import {openSetup} from '../lib/setup';
 import {displayName, modelLabel, useStore} from '../lib/store';
-import type {Agent, AgentTool, ConnectionApp, Connections, McpConnections, McpServerInfo, ModelInfo, ProviderCheck, ProviderKeyInfo, Tier, UsageSummary, WorkspaceMember, WorkspaceRole} from '../lib/types';
+import type {Agent, AgentTool, ConnectionApp, Connections, Device, McpConnections, McpServerInfo, ModelInfo, ProviderCheck, ProviderKeyInfo, Tier, UsageSummary, WorkspaceMember, WorkspaceRole} from '../lib/types';
 
 type Tab = 'profile' | 'people' | 'agents' | 'connections' | 'models' | 'mac';
 
@@ -1027,6 +1029,7 @@ function ThisMacSettings() {
                 </label>
                 <p className='mt-1 pl-7 text-[12px] text-muted'>Hold it to talk (it picks the chat from what you say), click it for what needs you, double-click to talk hands-free. Drag it anywhere; it settles on the nearest edge. Right-click for language and spoken answers.</p>
             </section>
+            <AgentsOnThisMac/>
             {server?.configured && (
                 <section>
                     <h3 className='mb-1 text-[13px] font-extrabold text-ink'>Captain on this Mac</h3>
@@ -1038,6 +1041,94 @@ function ThisMacSettings() {
                 </section>
             )}
         </div>
+    );
+}
+
+// Agents using this Mac: on or off, hands-free, permissions, a quick test.
+function AgentsOnThisMac() {
+    const [enabled, setEnabled] = useState<boolean | null>(null);
+    const [devices, setDevices] = useState<Device[]>([]);
+    const [perms, setPerms] = useState<Permissions | null>(null);
+    const [shot, setShot] = useState<{image: string; front: string} | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false);
+    const me = devices.find((d) => d.id === thisDeviceId());
+    const others = devices.filter((d) => d.id !== thisDeviceId());
+
+    const checkPerms = () => void deskPermissions().then(setPerms).catch(() => setPerms(null));
+    useEffect(() => {
+        void deviceEnabled().then(setEnabled);
+        void refreshDevices();
+        checkPerms();
+        const stop = onDevices(setDevices);
+        // Permissions change in System Settings, outside the app: look again now and then.
+        const t = window.setInterval(checkPerms, 4000);
+        return () => {
+            stop();
+            window.clearInterval(t);
+        };
+    }, []);
+
+    const row = (label: string, ok: boolean | null, link: string, why: string) => (
+        <div className='flex items-center gap-3 rounded-xl bg-bg-subtle px-3 py-2 ring-1 ring-line/70'>
+            <span className={`size-2 shrink-0 rounded-full ${ok ? 'bg-emerald-500' : ok === null ? 'bg-line' : 'bg-amber-500'}`}/>
+            <span className='min-w-0 flex-1'>
+                <span className='block text-[13px] font-bold text-ink'>{label}</span>
+                <span className='block text-[12px] text-muted'>{why}</span>
+            </span>
+            {!ok && <button type='button' className={ghostBtn} onClick={() => void openExternal(link)}>Open System Settings</button>}
+        </div>
+    );
+
+    return (
+        <section className='space-y-3'>
+            <div>
+                <h3 className='mb-1 text-[13px] font-extrabold text-ink'>Agents on this Mac</h3>
+                <p className='text-[12.5px] text-muted'>While Captain is open, agents you ask can work on this Mac: see the screen, read apps, click, type, open things, and carry a task through (&ldquo;grab the total from my spreadsheet, run it through ChatGPT, send it from Gmail&rdquo;). The little Captain shows each step; <span className='font-semibold text-ink'>Esc</span> stops it any time.</p>
+            </div>
+            <label className='flex items-center gap-3 text-[13px] text-text'>
+                <input type='checkbox' className='size-4 accent-[var(--accent)]' checked={!!enabled} disabled={enabled === null} onChange={(e) => {
+                    setEnabled(e.target.checked);
+                    void setDeviceEnabled(e.target.checked);
+                }}/>
+                Let agents use this Mac
+                {me && <span className={`ml-1 rounded-full px-2 py-0.5 text-[11px] font-bold ${me.online ? 'bg-emerald-500/15 text-emerald-700' : 'bg-bg-subtle text-muted'}`}>{me.online ? 'Connected' : 'Not connected'}</span>}
+            </label>
+            {enabled && (
+                <label className='flex items-center gap-3 pl-7 text-[13px] text-text'>
+                    <input type='checkbox' className='size-4 accent-[var(--accent)]' checked={!!me?.autopilot} disabled={!me} onChange={(e) => {
+                        if (me) {
+                            void api.updateDevice(me.id, {autopilot: e.target.checked}).then(() => refreshDevices()).catch((err) => setError(errorMessage(err)));
+                        }
+                    }}/>
+                    <span>
+                        Hands-free: don&apos;t ask before each task
+                        <span className='block text-[12px] text-muted'>Off: the first time a task needs this Mac, a card asks you once. Sending, paying, deleting and posting still ask either way unless you told it to.</span>
+                    </span>
+                </label>
+            )}
+            {enabled && (
+                <div className='space-y-2'>
+                    {row('Accessibility', perms?.accessibility ?? null, ACCESSIBILITY_SETTINGS, 'To click, type and read what apps show.')}
+                    {row('Screen Recording', perms?.screen ?? null, SCREEN_RECORDING_SETTINGS, 'To see the screen and window titles.')}
+                </div>
+            )}
+            {enabled && (
+                <div className='flex items-center gap-3'>
+                    <button type='button' className={ghostBtn} disabled={busy} onClick={() => {
+                        setBusy(true);
+                        setError(null);
+                        void testScreenshot().then(setShot).catch((err) => setError(errorMessage(err))).finally(() => setBusy(false));
+                    }}>{busy ? 'Looking…' : 'Test: take a look at the screen'}</button>
+                    {shot && <span className='text-[12px] text-muted'>Captain sees {shot.front || 'your screen'}. Its own windows are left out.</span>}
+                </div>
+            )}
+            {shot && <img src={shot.image} alt='What Captain sees' className='w-full max-w-[420px] rounded-xl ring-1 ring-line/70'/>}
+            {others.length > 0 && (
+                <p className='text-[12px] text-muted'>Also yours: {others.map((d) => `${d.name}${d.online ? '' : ' (offline)'}`).join(', ')}.</p>
+            )}
+            {error && <p className='text-[12.5px] text-alert'>{error}</p>}
+        </section>
     );
 }
 

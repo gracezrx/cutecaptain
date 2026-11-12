@@ -14,6 +14,7 @@ import {ZodError} from 'zod';
 import type {Orchestrator} from './agents/orchestrator.js';
 import {adminRoutes} from './api/admin.js';
 import {connectionRoutes} from './api/connections.js';
+import {deviceRoutes} from './api/devices.js';
 import {donePage} from './app/connections.js';
 import {callbackPage, startPage} from './app/mcp.js';
 import {authRoutes} from './api/auth.js';
@@ -64,7 +65,8 @@ export async function buildServer(api: Api): Promise<FastifyInstance> {
         maxAge: 600,
     });
     await app.register(multipart, {limits: {fileSize: config.files.maxBytes + 1, files: 1, fields: 5}});
-    await app.register(websocket, {options: {maxPayload: 64 * 1024}});
+    // Devices answer over the socket, screenshots included.
+    await app.register(websocket, {options: {maxPayload: 12 * 1024 * 1024}});
 
     // Accept POSTs with a JSON content type and no body (common for action endpoints).
     app.removeContentTypeParser('application/json');
@@ -144,6 +146,7 @@ export async function buildServer(api: Api): Promise<FastifyInstance> {
         chatRoutes(v1, api);
         adminRoutes(v1, api);
         connectionRoutes(v1, api);
+        deviceRoutes(v1, api);
 
         v1.get('/websocket', {websocket: true, config: {public: true}}, (socket) => {
             ctx.hub.accept(socket);

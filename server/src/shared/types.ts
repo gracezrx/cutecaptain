@@ -295,7 +295,13 @@ export type ServerEvent =
     | {event: 'reaction_changed'; data: {postId: ID; channelId: ID; reactions: Post['reactions']}}
     | {event: 'run_updated'; data: {runId: ID; channelId: ID; status: RunStatus; triggerPostId: ID | null}}
     | {event: 'user_updated'; data: {user: User}}
-    | {event: 'workspace_member_added'; data: {workspaceId: ID; user: User; role: WorkspaceRole}};
+    | {event: 'workspace_member_added'; data: {workspaceId: ID; user: User; role: WorkspaceRole}}
+    // An agent asks one of your devices to do something (only that device acts on it).
+    | {event: 'device_request'; data: DeviceRequest}
+    // A device of yours came online, went offline, or had its settings changed.
+    | {event: 'device_updated'; data: {device: Device}}
+    // The run that was using a device ended or was stopped: the device can relax.
+    | {event: 'device_released'; data: {deviceId: ID; runId: ID}};
 
 export type EventName = ServerEvent['event'];
 export type EventEnvelope = ServerEvent & {seq: number};
@@ -304,7 +310,52 @@ export type EventEnvelope = ServerEvent & {seq: number};
 export type ClientMessage =
     | {action: 'auth'; seq: number; token: string; connectionId?: string; lastSeq?: number}
     | {action: 'typing'; seq: number; channelId: ID; rootId?: ID | null}
-    | {action: 'ping'; seq: number};
+    | {action: 'ping'; seq: number}
+    // This connection is a device agents can use (the Mac app, the Chrome extension).
+    | {action: 'device_register'; seq: number; device: DeviceRegistration}
+    // The device's answer to a device_request.
+    | {action: 'device_result'; seq: number; requestId: ID; ok: boolean; result?: unknown; error?: string};
+
+// ------------------------------------------------------------ devices
+//
+// A person's Mac app or Chrome extension. While it's online, agents working
+// for that person can use it: see the screen, click and type (a Mac), or
+// read and drive web pages (Chrome). Each action is a request the device
+// answers over its socket.
+
+export type DeviceKind = 'mac' | 'chrome';
+
+export type DeviceRegistration = {
+    id: ID | null; // the id this device was given before, so its settings stick
+    kind: DeviceKind;
+    name: string; // "Grace's MacBook Pro", "Chrome"
+    capabilities: string[]; // tool names it answers, e.g. computer_screenshot
+};
+
+export type Device = {
+    id: ID;
+    kind: DeviceKind;
+    name: string;
+    capabilities: string[];
+    online: boolean;
+    autopilot: boolean; // agents may use it without asking first each task
+    lastSeenAt: Ms;
+    createdAt: Ms;
+};
+
+export type DeviceRequest = {
+    id: ID;
+    deviceId: ID;
+    runId: ID | null;
+    stepId: ID | null;
+    tool: string; // computer_click, browser_navigate, …
+    args: Record<string, unknown>;
+    deadline: Ms; // answer by then, or the agent is told it timed out
+};
+
+// What a device sends back for a request. `images` are data URLs the model
+// sees (screenshots); `text` is what it reads.
+export type DeviceResult = {text?: string; images?: string[]};
 
 export type ApiError = {error: string; message: string; status: number};
 

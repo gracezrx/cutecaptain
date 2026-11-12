@@ -3,13 +3,14 @@ import type {AgentRow} from '../../store/agents.js';
 import type {ToolDef} from '../../llm/types.js';
 
 import {requestApproval, sendEmail} from './actions.js';
+import {useBrowser, useComputer} from './device.js';
 import {createDocument, createPresentation, createSpreadsheet} from './files.js';
 import {askAgent} from './handoff.js';
 import type {Tool} from './types.js';
 import {readUrl, webSearch} from './web.js';
 import {readChannel, searchWorkspace} from './workspace.js';
 
-export const TOOLS: Tool[] = [searchWorkspace, readChannel, webSearch, readUrl, createDocument, createPresentation, createSpreadsheet, askAgent, requestApproval, sendEmail];
+export const TOOLS: Tool[] = [searchWorkspace, readChannel, webSearch, readUrl, createDocument, createPresentation, createSpreadsheet, askAgent, requestApproval, sendEmail, useComputer, useBrowser];
 
 const byName = new Map(TOOLS.map((t) => [t.name, t]));
 
@@ -23,7 +24,7 @@ export function toolsFor(agent: AgentRow, opts: {exclude?: string[]} = {}): Tool
 }
 
 export function toolDefs(tools: Tool[]): ToolDef[] {
-    return tools.map((t) => ({type: 'function', function: {name: t.name, description: t.description, parameters: t.parameters}}));
+    return tools.filter((t) => !t.marker).map((t) => ({type: 'function', function: {name: t.name, description: t.description, parameters: t.parameters}}));
 }
 
 export function toolCatalog(): AgentTool[] {

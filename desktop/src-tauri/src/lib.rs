@@ -821,8 +821,10 @@ fn save_settings(app: &AppHandle) {
 struct Keys {
     panel: Mutex<Option<Shortcut>>,
     talk: Mutex<Option<Shortcut>>,
-    /// Esc, held only while the floating Captain listens or speaks.
+    /// Esc, held only while the floating Captain listens or speaks, or while
+    /// an agent works on this Mac (the people who need it: "orb", "drive").
     escape: Mutex<Option<Shortcut>>,
+    escape_users: Mutex<std::collections::HashSet<String>>,
     status: Mutex<std::collections::HashMap<String, ShortcutStatus>>,
 }
 
@@ -912,12 +914,20 @@ fn shortcut_set(app: AppHandle, kind: String, keys: String) -> ShortcutStatus {
     status
 }
 
-/// While the floating Captain listens or speaks, Esc (in any app) cancels.
-#[tauri::command]
-fn orb_escape(app: AppHandle, active: bool) {
+/// Esc (in any app) is taken only while someone needs it: the floating
+/// Captain while it listens or speaks, or the device link while an agent
+/// works on this Mac. Pressing it tells both; each decides what to do.
+fn set_escape(app: &AppHandle, who: &str, active: bool) {
     let keys = app.state::<Keys>();
-    let mut slot = keys.escape.lock().unwrap();
+    let mut users = keys.escape_users.lock().unwrap();
     if active {
+        users.insert(who.to_string());
+    } else {
+        users.remove(who);
+    }
+    let wanted = !users.is_empty();
+    let mut slot = keys.escape.lock().unwrap();
+    if wanted {
         if slot.is_none() {
             if let Ok(shortcut) = Shortcut::from_str("Escape") {
                 if app.global_shortcut().register(shortcut).is_ok() {
@@ -928,6 +938,18 @@ fn orb_escape(app: AppHandle, active: bool) {
     } else if let Some(shortcut) = slot.take() {
         let _ = app.global_shortcut().unregister(shortcut);
     }
+}
+
+/// While the floating Captain listens or speaks, Esc (in any app) cancels.
+#[tauri::command]
+fn orb_escape(app: AppHandle, active: bool) {
+    set_escape(&app, "orb", active);
+}
+
+/// While an agent works on this Mac, Esc (in any app) stops it.
+#[tauri::command]
+fn drive_escape(app: AppHandle, active: bool) {
+    set_escape(&app, "drive", active);
 }
 
 /// The talk shortcut went down or up: the floating button handles it (hold
@@ -1137,6 +1159,74 @@ async fn type_text(window: WebviewWindow, pid: i32, text: String) -> Result<(), 
     }
 }
 
+// ------------------------------------------------------------ hands and eyes for agents
+//
+// The captain-desk helper (desk/main.swift) sits next to the app's executable
+// and does one action per call: a screenshot, a click, keys, reading an app
+// through Accessibility. The dashboard window (which holds the connection to
+// the server) maps an agent's request to a call here; see src/lib/computer.ts.
+
+fn desk_helper() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let helper = exe.parent().ok_or("No app folder.")?.join("captain-desk");
+    match std::fs::metadata(&helper) {
+        Ok(m) if m.len() > 0 => Ok(helper),
+        _ => Err("Using this Mac isn't available in this copy of Captain.".into()),
+    }
+}
+
+/// Run one helper command; its last line is the JSON answer. `args[0]` is the
+/// command. Only the dashboard window may call this.
+#[tauri::command]
+async fn desk_run(window: WebviewWindow, args: Vec<String>, stdin: Option<String>, timeout_ms: Option<u64>) -> Result<serde_json::Value, String> {
+    if window.label() != "main" {
+        return Err("Only the dashboard can use this Mac for agents.".into());
+    }
+    if args.is_empty() {
+        return Err("No command.".into());
+    }
+    let helper = desk_helper()?;
+    let limit = Duration::from_millis(timeout_ms.unwrap_or(20_000).clamp(1_000, 120_000));
+    let mut child = Command::new(helper)
+        .args(&args)
+        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Couldn't start the helper: {e}"))?;
+    if let Some(text) = stdin {
+        if let Some(mut input) = child.stdin.take() {
+            let _ = input.write_all(text.as_bytes());
+        }
+    }
+    let mut stdout = child.stdout.take().ok_or("No output from the helper.")?;
+    // Read in a thread so a slow helper can be given up on.
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = stdout.read_to_string(&mut out);
+        out
+    });
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if started.elapsed() < limit => std::thread::sleep(Duration::from_millis(25)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("The action took longer than {}s and was stopped.", limit.as_secs()));
+            }
+        }
+    }
+    let out = reader.join().unwrap_or_default();
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The helper gave no answer.")?;
+    let value: serde_json::Value = serde_json::from_str(line.trim()).map_err(|e| format!("Bad answer from the helper: {e}"))?;
+    if value["type"] == "error" {
+        return Err(value["message"].as_str().unwrap_or("The action failed.").to_string());
+    }
+    Ok(value)
+}
+
 // ------------------------------------------------------------ floating talk button
 
 fn orb(app: &AppHandle) -> Option<WebviewWindow> {
@@ -1281,6 +1371,7 @@ pub fn run() {
                             if let Some(window) = orb(app) {
                                 let _ = window.emit("orb-escape", ());
                             }
+                            let _ = app.emit_to("main", "device-stop", ());
                         }
                     } else if is_panel && event.state() == ShortcutState::Pressed {
                         toggle_panel(app, PanelTarget::mode("compose"));
@@ -1320,6 +1411,8 @@ pub fn run() {
             orb_menu,
             orb_moved,
             orb_escape,
+            drive_escape,
+            desk_run,
             front_app,
             type_text,
             orb_set_visible,
@@ -1348,7 +1441,7 @@ pub fn run() {
                 let app_for_orb = handle.clone();
                 window.on_window_event(move |event| {
                     if let WindowEvent::Destroyed = event {
-                        orb_escape(app_for_orb.clone(), false);
+                        set_escape(&app_for_orb, "orb", false);
                     }
                 });
                 place_orb(&handle, &window);
