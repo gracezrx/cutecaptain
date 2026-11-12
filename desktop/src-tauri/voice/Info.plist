@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleIdentifier</key>
-  <string>ai.captainspace.desktop.voice</string>
+  <string>ai.captainspace.cutecaptain.voice</string>
   <key>CFBundleName</key>
-  <string>Captain</string>
+  <string>cutecaptain</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Captain listens while you talk to it or hold the voice key.</string>
   <key>NSSpeechRecognitionUsageDescription</key>

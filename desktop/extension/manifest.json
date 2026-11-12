@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "Captain",
+  "name": "cutecaptain",
   "version": "0.1.0",
   "description": "Send pages to your team and agents, approve what agents want to do, chat with Captain next to any tab, and let agents work in your Chrome.",
   "icons": {"16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png"},
   "action": {
-    "default_title": "Captain",
+    "default_title": "cutecaptain",
     "default_popup": "extension/popup.html",
     "default_icon": {"16": "icons/16.png", "32": "icons/32.png"}
   },

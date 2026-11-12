@@ -78,7 +78,7 @@ export class McpClient {
     }
 
     async initialize(): Promise<void> {
-        const result = await this.request('initialize', {protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: {name: 'captain-desktop', version: '1.0.0'}}) as {protocolVersion?: unknown; serverInfo?: {name?: unknown}} | undefined;
+        const result = await this.request('initialize', {protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: {name: 'cutecaptain', version: '1.0.0'}}) as {protocolVersion?: unknown; serverInfo?: {name?: unknown}} | undefined;
         this.version = typeof result?.protocolVersion === 'string' ? result.protocolVersion.slice(0, 32) : MCP_PROTOCOL_VERSION;
         this.serverName = typeof result?.serverInfo?.name === 'string' ? result.serverInfo.name.slice(0, 100) : '';
         await this.post({jsonrpc: '2.0', method: 'notifications/initialized'}, 10_000);

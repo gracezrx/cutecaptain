@@ -1,7 +1,7 @@
 [package]
-name = "captain-desktop"
+name = "cutecaptain"
 version = "0.1.0"
-description = "Captain Desktop: a lightweight Mac app for Captain group chats"
+description = "cutecaptain: a lightweight Mac app for Captain group chats"
 edition = "2021"
 publish = false
 
