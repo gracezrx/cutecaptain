@@ -5,7 +5,22 @@ on:
     branches: [main]
 
 jobs:
+  # Mechanical gates: the rules of the codebase, enforced before anything builds.
+  # If a review comment comes up three times, it belongs here, not in a comment.
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Layer boundaries (api → app → store, desktop → shared only)
+        run: node scripts/check-boundaries.mjs
+      - name: Ratchet (known debt may shrink, never grow)
+        run: node scripts/ratchet.mjs
+
   server:
+    needs: gates
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -35,6 +50,7 @@ jobs:
           LOG_LEVEL: error
 
   app:
+    needs: gates
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -49,3 +65,46 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run build:extension
+
+  # Verification: the real server and the real web app, driven in a browser.
+  # A PR that typechecks but breaks sign-up, posting or @captain fails here.
+  e2e:
+    needs: gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: captain_e2e
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            desktop/package-lock.json
+            server/package-lock.json
+      - run: npm ci
+        working-directory: server
+      - run: npm ci
+        working-directory: desktop
+      - run: npx playwright install --with-deps chromium
+        working-directory: desktop
+      - run: npm run build
+        working-directory: desktop
+      - run: npm run e2e
+        working-directory: desktop
+        env:
+          E2E_DATABASE_URL: postgres://postgres@localhost:5432/captain_e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-evidence
+          path: desktop/e2e/evidence
+          retention-days: 14

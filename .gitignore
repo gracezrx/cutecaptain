@@ -12,3 +12,6 @@ desktop/src-tauri/resources/extension/*
 !desktop/src-tauri/resources/extension/README.md
 desktop/dist-extension/
 desktop/src-tauri/binaries/captain-voice-*
+
+# e2e evidence (screenshots, traces, reports) is produced per run
+desktop/e2e/evidence/

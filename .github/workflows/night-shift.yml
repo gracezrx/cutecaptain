@@ -1,0 +1,171 @@
+# Night shift: works GitHub issues labelled `agent` into pull requests while
+# nobody is watching. Runs nightly (02:00 Pacific) and on demand.
+#
+# How an issue flows:
+#   label `agent`            → in the queue
+#   label `agent:working`    → picked up tonight (removed when the run ends)
+#   label `agent:pr-open`    → a PR is open; the issue waits for review
+#   label `agent:blocked`    → the agent couldn't reproduce or finish; it said why in a comment
+#
+# Each issue gets its own job, its own branch (agent/issue-N), the full test
+# stack (Postgres, Chromium) so the agent can run the gates itself, and hard
+# caps on turns and spend. Nothing here merges: a person does, after CI is
+# green and the evidence in the PR holds up.
+#
+# Setup (once):
+#   1. Install the Claude GitHub App on this repo: https://github.com/apps/claude
+#   2. Add the secret ANTHROPIC_API_KEY (Settings → Secrets → Actions)
+#   3. Create the labels: agent, agent:working, agent:pr-open, agent:blocked
+#   4. Optional: AGENT_GH_TOKEN, a fine-grained PAT with contents + pull-requests
+#      + issues write. Without it, PRs the agent opens are created with the
+#      workflow token, which does not trigger CI on them.
+
+name: Night shift
+
+on:
+  schedule:
+    - cron: '0 10 * * *' # 02:00 Pacific (PST); 03:00 during PDT
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Work one specific issue number (leave blank to take from the queue)
+        type: string
+      max:
+        description: How many issues to take from the queue tonight
+        type: number
+        default: 3
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+concurrency:
+  group: night-shift
+  cancel-in-progress: false
+
+jobs:
+  pick:
+    runs-on: ubuntu-latest
+    outputs:
+      issues: ${{ steps.pick.outputs.issues }}
+      count: ${{ steps.pick.outputs.count }}
+    env:
+      GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN || github.token }}
+    steps:
+      - id: pick
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.issue }}" ]; then
+            issues='[${{ inputs.issue }}]'
+          else
+            max='${{ inputs.max || 3 }}'
+            # Oldest first; skip anything already being worked or waiting on a PR.
+            issues=$(gh issue list --repo "$GITHUB_REPOSITORY" --label agent --state open --json number,labels --limit 50 \
+              | jq -c --argjson max "$max" '[.[] | select(all(.labels[].name; . != "agent:working" and . != "agent:pr-open")) | .number] | sort | .[:$max]')
+          fi
+          echo "issues=$issues" >> "$GITHUB_OUTPUT"
+          echo "count=$(echo "$issues" | jq 'length')" >> "$GITHUB_OUTPUT"
+          echo "Tonight: $issues"
+      - name: Mark as working
+        if: steps.pick.outputs.count != '0'
+        run: |
+          for n in $(echo '${{ steps.pick.outputs.issues }}' | jq -r '.[]'); do
+            gh issue edit "$n" --repo "$GITHUB_REPOSITORY" --add-label agent:working || true
+          done
+
+  work:
+    needs: pick
+    if: needs.pick.outputs.count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        issue: ${{ fromJson(needs.pick.outputs.issues) }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN || github.token }}
+      TEST_DATABASE_URL: postgres://postgres@localhost:5432/captain_test
+      E2E_DATABASE_URL: postgres://postgres@localhost:5432/captain_e2e
+      LOG_LEVEL: error
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            desktop/package-lock.json
+            server/package-lock.json
+      - name: Install everything the gates need
+        run: |
+          psql postgres://postgres@localhost:5432/postgres -c 'create database captain_test' -c 'create database captain_e2e'
+          (cd server && npm ci)
+          (cd desktop && npm ci && npx playwright install --with-deps chromium && npm run build)
+      - name: Branch
+        run: |
+          git config user.name 'captain-night-shift[bot]'
+          git config user.email 'night-shift@users.noreply.github.com'
+          git checkout -B "agent/issue-${{ matrix.issue }}"
+
+      - name: Work the issue
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.AGENT_GH_TOKEN || github.token }}
+          prompt: |
+            You are on the night shift for this repository. Work GitHub issue #${{ matrix.issue }} to a pull request, alone, with no one to ask.
+
+            Start by reading CLAUDE.md. Then read the issue: `gh issue view ${{ matrix.issue }} --comments`.
+
+            Rules of the shift:
+            - Use the `bugfix` skill for bugs and the `prove` skill for everything. The standard is: reproduced before, gone after, with evidence.
+            - You are on branch agent/issue-${{ matrix.issue }}. Commit small, atomic commits with clear messages. Never touch main.
+            - Run every gate before you open the PR: `node scripts/check-boundaries.mjs`, `node scripts/ratchet.mjs`, `cd server && npm run typecheck && npm test`, `cd desktop && npm run typecheck && npm run build && npm run e2e`. A red gate means you are not done.
+            - If the issue is too big for one PR, do the first self-contained slice, open the PR for it, and leave a comment on the issue listing the remaining slices.
+            - If you cannot reproduce the problem, or you hit something that needs a decision from a person, do not guess. Comment on the issue with what you tried, what you saw, and the exact question, then add the label agent:blocked and stop.
+            - Do not widen scope. Other bugs you notice become new issues labelled `agent`, with a reproduction path, not changes in this PR.
+
+            When the gates are green:
+            1. `git push -u origin agent/issue-${{ matrix.issue }}`
+            2. `gh pr create --fill --base main --title "<type>: <what changed> (#${{ matrix.issue }})" --body-file <a file you write>` using the PR template at .github/pull_request_template.md, filled in fully: what changed, why, and the Verification section with spec names, screenshot paths and what you saw. Write "Closes #${{ matrix.issue }}" in the body.
+            3. `gh issue edit ${{ matrix.issue }} --add-label agent:pr-open --remove-label agent:working`
+            4. Comment on the issue with the PR link and one line on what to look at first in review.
+          claude_args: |
+            --max-turns 80
+            --max-budget-usd 8
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(git *),Bash(gh *),Bash(npm *),Bash(npx *),Bash(node *),Bash(psql *),Bash(cat *),Bash(ls *),Bash(mkdir *),Bash(cd *),Bash(E2E_SERVER_LOG=* *),Bash(PLAYWRIGHT_* *)"
+
+      - name: Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-${{ matrix.issue }}-evidence
+          path: desktop/e2e/evidence
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Release the issue if nothing was opened
+        if: always()
+        run: |
+          labels=$(gh issue view ${{ matrix.issue }} --json labels --jq '[.labels[].name] | join(",")')
+          case "$labels" in
+            *agent:pr-open*|*agent:blocked*) ;;
+            *)
+              gh issue edit ${{ matrix.issue }} --remove-label agent:working || true
+              gh issue comment ${{ matrix.issue }} --body "Night shift ended without a PR or a blocker comment (run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}). Back in the queue for tomorrow."
+              ;;
+          esac
