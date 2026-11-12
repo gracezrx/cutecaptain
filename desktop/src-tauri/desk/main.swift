@@ -20,6 +20,9 @@
 //   captain-desk ax [app|front] [query] [max]  The app's contents from Accessibility: {"type":"ax","app":…,"nodes":[{role,title,value,desc,x,y,w,h,enabled,focused,selected,depth}]}
 //   captain-desk clipboard get | set         (set reads stdin)
 //   captain-desk permissions                 {"type":"permissions","accessibility":true,"screen":false}
+//   captain-desk hit x y                     What's under that point: {"type":"hit","role":"AXButton","title":"Send","desc":…,"app":"Mail"}
+//                                            (the nearest button, link or menu item around it), for the gate in src/lib/gate.ts.
+//   captain-desk focused                     The element with the keyboard focus: {"type":"focused","role":"AXTextField","subrole":"AXSecureTextField",…}
 //
 // Needs Accessibility (clicks, keys, reading apps) and Screen Recording
 // (screenshots, window titles), both granted to Captain, which starts this.
@@ -634,6 +637,71 @@ func readApp(_ query: String, filter: String?, max: Int) -> Never {
     exit(0)
 }
 
+// ------------------------------------------------------------ what's there (for the gate)
+
+func asElement(_ v: AnyObject?) -> AXUIElement? {
+    guard let v = v, CFGetTypeID(v) == AXUIElementGetTypeID() else { return nil }
+    return (v as! AXUIElement)
+}
+
+func describe(_ el: AXUIElement) -> [String: Any] {
+    var pid: pid_t = 0
+    AXUIElementGetPid(el, &pid)
+    return [
+        "role": axString(el, kAXRoleAttribute) ?? "",
+        "subrole": axString(el, kAXSubroleAttribute) ?? "",
+        "title": axString(el, kAXTitleAttribute) ?? "",
+        "desc": axString(el, kAXDescriptionAttribute) ?? "",
+        "help": axString(el, kAXHelpAttribute) ?? "",
+        "placeholder": axString(el, kAXPlaceholderValueAttribute) ?? "",
+        "app": NSRunningApplication(processIdentifier: pid)?.localizedName ?? "",
+    ]
+}
+
+let PRESSABLE_ROLES: Set<String> = ["AXButton", "AXMenuItem", "AXLink", "AXMenuButton", "AXPopUpButton", "AXCheckBox", "AXRadioButton"]
+
+func hitTest(x: Double, y: Double) -> Never {
+    needAccessibility()
+    let system = AXUIElementCreateSystemWide()
+    AXUIElementSetMessagingTimeout(system, 2)
+    var found: AXUIElement?
+    let p = clamp(x, y)
+    guard AXUIElementCopyElementAtPosition(system, Float(p.x), Float(p.y), &found) == .success, let start = found else {
+        emit(["type": "hit", "role": ""])
+        exit(0)
+    }
+    // A button's label often sits on a child (its text or image): climb to the button.
+    var current: AXUIElement? = start
+    var best = start
+    var steps = 0
+    while let c = current, steps < 6 {
+        if PRESSABLE_ROLES.contains(axString(c, kAXRoleAttribute) ?? "") {
+            best = c
+            break
+        }
+        current = asElement(axAttr(c, kAXParentAttribute))
+        steps += 1
+    }
+    var out = describe(best)
+    out["type"] = "hit"
+    emit(out)
+    exit(0)
+}
+
+func focusedElement() -> Never {
+    needAccessibility()
+    let system = AXUIElementCreateSystemWide()
+    AXUIElementSetMessagingTimeout(system, 2)
+    guard let el = asElement(axAttr(system, kAXFocusedUIElementAttribute)) else {
+        emit(["type": "focused", "role": ""])
+        exit(0)
+    }
+    var out = describe(el)
+    out["type"] = "focused"
+    emit(out)
+    exit(0)
+}
+
 // ------------------------------------------------------------ clipboard
 
 func clipboard(_ action: String) -> Never {
@@ -688,6 +756,10 @@ case "ax":
     readApp(rest.first ?? "front", filter: rest.count > 1 ? rest[1] : nil, max: Int(number(2, 400)))
 case "clipboard":
     clipboard(rest.first ?? "get")
+case "hit":
+    hitTest(x: number(0), y: number(1))
+case "focused":
+    focusedElement()
 default:
     fail("Unknown command \(command).")
 }

@@ -3,7 +3,7 @@ import type {AgentRow} from '../../store/agents.js';
 import type {ToolDef} from '../../llm/types.js';
 
 import {requestApproval, sendEmail} from './actions.js';
-import {useBrowser, useComputer} from './device.js';
+import {handOverLater, useBrowser, useComputer} from './device.js';
 import {createDocument, createPresentation, createSpreadsheet} from './files.js';
 import {askAgent} from './handoff.js';
 import type {Tool} from './types.js';
@@ -12,7 +12,10 @@ import {readChannel, searchWorkspace} from './workspace.js';
 
 export const TOOLS: Tool[] = [searchWorkspace, readChannel, webSearch, readUrl, createDocument, createPresentation, createSpreadsheet, askAgent, requestApproval, sendEmail, useComputer, useBrowser];
 
-const byName = new Map(TOOLS.map((t) => [t.name, t]));
+// Looked up when a run resumes after a decision, never offered to a model.
+const RESUME_ONLY: Tool[] = [handOverLater];
+
+const byName = new Map([...TOOLS, ...RESUME_ONLY].map((t) => [t.name, t]));
 
 export function getTool(name: string): Tool | undefined {
     return byName.get(name);

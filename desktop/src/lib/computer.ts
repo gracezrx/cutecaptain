@@ -6,6 +6,7 @@
 
 import {invoke} from '@tauri-apps/api/core';
 
+import {cardDetails, displayLabel, ENTER_SENDS_APPS, isOutbound, isSecretField, isSendKey, SECRET_REFUSAL, targetOf} from './gate';
 import type {DeviceResult} from './types';
 
 export const MAX_WIDTH = 1440;
@@ -69,6 +70,57 @@ function nodeLine(nd: AxNode, k: number): string {
 
 export type ComputerArgs = Record<string, unknown>;
 
+// ---- the gate (lib/gate.ts): stop before sending, paying, posting, deleting
+
+type Hit = {role: string; subrole?: string; title?: string; desc?: string; help?: string; app?: string};
+
+const PRESSABLE = ['AXButton', 'AXMenuItem', 'AXLink', 'AXMenuButton', 'AXPopUpButton', 'AXCheckBox', 'AXRadioButton', 'AXCell'];
+const TEXT_ROLES = ['AXTextField', 'AXTextArea', 'AXComboBox', 'AXSearchField'];
+
+// The fields in the window in front (To, Subject, the body…), for the card.
+async function frontFields(): Promise<{label: string; value: string}[]> {
+    const ax = await desk<Ax>(['ax', 'front', '', '250'], {timeoutMs: 8000}).catch(() => null);
+    if (!ax) {
+        return [];
+    }
+    return ax.nodes.filter((nd) => TEXT_ROLES.includes(nd.role) && nd.value).map((nd) => ({label: (nd.title || nd.desc || (nd.role === 'AXTextArea' ? 'Message' : 'Field')).replace(/:$/, ''), value: nd.value ?? ''}));
+}
+
+async function gate(action: string, label: string, app: string, confirm: unknown): Promise<DeviceResult | null> {
+    const details = cardDetails(await frontFields());
+    const target = targetOf(app, label, details);
+    if (confirm === target) {
+        return null;
+    }
+    return {needsConfirm: {action, target, site: app, details: confirm ? [{label: 'Note', value: 'This changed after you approved it, so here it is again.'}, ...details].slice(0, 8) : details}};
+}
+
+async function clickGate(p: {x: number; y: number}, confirm: unknown): Promise<DeviceResult | null> {
+    const hit = await desk<Hit>(['hit', String(p.x), String(p.y)]).catch(() => null);
+    const label = hit && PRESSABLE.includes(hit.role) ? (hit.title || hit.desc || hit.help || '') : '';
+    return label && isOutbound(label, hit?.app ?? '') ? gate(`Click "${displayLabel(label)}"`, label, hit?.app || 'the app in front', confirm) : null;
+}
+
+async function focusedField(): Promise<Hit & {placeholder?: string} | null> {
+    return desk<Hit & {placeholder?: string}>(['focused']).catch(() => null);
+}
+
+async function secretField(): Promise<boolean> {
+    const f = await focusedField();
+    return Boolean(f && isSecretField({subrole: f.subrole, label: `${f.title ?? ''} ${f.desc ?? ''} ${f.placeholder ?? ''}`}));
+}
+
+// Keys that send: cmd+enter and friends anywhere text is being written, and
+// plain Enter in a chat app's message box.
+async function keyGate(combo: string, confirm: unknown): Promise<DeviceResult | null> {
+    const f = await focusedField();
+    const app = f?.app ?? '';
+    const inText = Boolean(f && TEXT_ROLES.includes(f.role));
+    const c = combo.toLowerCase();
+    const sends = isSendKey(c) ? inText || app === 'Mail' : (c === 'enter' || c === 'return') && inText && ENTER_SENDS_APPS.includes(app);
+    return sends ? gate(`Press ${combo} (Send)`, 'Send', app || 'the app in front', confirm) : null;
+}
+
 export async function runComputer(tool: string, a: ComputerArgs): Promise<DeviceResult> {
     switch (tool) {
     case 'computer_screenshot': {
@@ -105,6 +157,10 @@ export async function runComputer(tool: string, a: ComputerArgs): Promise<Device
     }
     case 'computer_click': {
         const p = await toPoints(a.x, a.y);
+        const stop = await clickGate(p, a.confirm);
+        if (stop) {
+            return stop;
+        }
         const button = a.button === 'right' ? 'right' : a.button === 'middle' ? 'middle' : 'left';
         const count = Math.max(1, Math.min(3, n(a.count, 1)));
         const mods = Array.isArray(a.modifiers) ? a.modifiers.map(String).join(',') : '';
@@ -133,6 +189,15 @@ export async function runComputer(tool: string, a: ComputerArgs): Promise<Device
         if (!text) {
             return {text: 'Nothing to type.'};
         }
+        if (await secretField()) {
+            return {needsPerson: SECRET_REFUSAL};
+        }
+        if (a.submit) {
+            const stop = await keyGate('enter', a.confirm);
+            if (stop) {
+                return stop;
+            }
+        }
         await desk(['type', ...(a.submit ? ['--submit'] : [])], {stdin: text, timeoutMs: Math.min(120_000, 10_000 + text.length * 40)});
         return {text: `Typed ${text.length} characters${a.submit ? ' and pressed Enter' : ''}.`};
     }
@@ -140,6 +205,15 @@ export async function runComputer(tool: string, a: ComputerArgs): Promise<Device
         const combos = String(a.keys ?? '').split(/\s+/).filter(Boolean);
         if (!combos.length) {
             return {text: 'Say which keys to press.'};
+        }
+        if (combos.some((k) => /^(cmd|command|ctrl|control)\+v$/i.test(k)) && await secretField()) {
+            return {needsPerson: SECRET_REFUSAL};
+        }
+        for (const k of combos) {
+            const stop = await keyGate(k, a.confirm);
+            if (stop) {
+                return stop;
+            }
         }
         await desk(['key', ...combos]);
         return {text: `Pressed ${combos.join(', ')}.`};
@@ -186,7 +260,11 @@ export async function runComputer(tool: string, a: ComputerArgs): Promise<Device
 }
 
 // What this Mac offers agents (the server only offers these as tools).
-export const COMPUTER_CAPABILITIES = ['computer_screenshot', 'computer_zoom', 'computer_read_screen', 'computer_click', 'computer_move', 'computer_drag', 'computer_scroll', 'computer_type', 'computer_key', 'computer_open', 'computer_focus', 'computer_apps', 'computer_clipboard', 'computer_wait'];
+export const COMPUTER_CAPABILITIES = [
+    'computer_screenshot', 'computer_zoom', 'computer_read_screen', 'computer_click', 'computer_move', 'computer_drag', 'computer_scroll', 'computer_type', 'computer_key',
+    'computer_open', 'computer_focus', 'computer_apps', 'computer_clipboard', 'computer_wait',
+    'confirm_gate', // stops before Send, Pay, Delete… and refuses password fields (lib/gate.ts)
+];
 
 export type Permissions = {accessibility: boolean; screen: boolean};
 

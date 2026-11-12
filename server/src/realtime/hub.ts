@@ -41,6 +41,7 @@ export type HubDeps = {
     // Devices (the Mac app, the Chrome extension) on this socket.
     onDeviceRegister?: (userId: string, connectionId: string, device: DeviceRegistration) => Promise<{id: string} | {error: string}>;
     onDeviceResult?: (userId: string, connectionId: string, requestId: string, ok: boolean, result: unknown, error: string | undefined) => Promise<void>;
+    onDeviceProgress?: (userId: string, connectionId: string, requestId: string, progress: {text?: string; site?: string; thumb?: string}) => Promise<void>;
     onDeviceClosed?: (connectionId: string) => Promise<void>;
     onDevicesAlive?: (connectionIds: string[]) => Promise<void>; // every sweep, the live sockets
 };
@@ -128,6 +129,10 @@ export class Hub {
                 ws.send(JSON.stringify('id' in out ? {status: 'OK', seqReply: msg.seq, data: {deviceId: out.id}} : {status: 'FAIL', seqReply: msg.seq, error: out.error}));
             } else if (msg.action === 'device_result' && this.deps.onDeviceResult && typeof msg.requestId === 'string') {
                 void this.deps.onDeviceResult(conn.userId, conn.id, msg.requestId, Boolean(msg.ok), msg.result, typeof msg.error === 'string' ? msg.error : undefined).catch(() => undefined);
+            } else if (msg.action === 'device_progress' && this.deps.onDeviceProgress && typeof msg.requestId === 'string') {
+                const str = (v: unknown, n: number) => (typeof v === 'string' ? v.slice(0, n) : undefined);
+                const thumb = typeof msg.thumb === 'string' && msg.thumb.length <= 200_000 ? msg.thumb : undefined; // a small picture, or none
+                void this.deps.onDeviceProgress(conn.userId, conn.id, msg.requestId, {text: str(msg.text, 200), site: str(msg.site, 120), thumb}).catch(() => undefined);
             }
         });
         ws.on('pong', () => {

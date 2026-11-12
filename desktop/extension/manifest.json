@@ -11,7 +11,7 @@
   },
   "side_panel": {"default_path": "extension/sidepanel.html"},
   "background": {"service_worker": "background.js", "type": "module"},
-  "permissions": ["storage", "contextMenus", "sidePanel", "activeTab", "scripting", "alarms", "tabs"],
+  "permissions": ["storage", "contextMenus", "sidePanel", "activeTab", "scripting", "alarms", "tabs", "tabGroups"],
   "optional_permissions": ["debugger"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
   "optional_host_permissions": ["<all_urls>"],

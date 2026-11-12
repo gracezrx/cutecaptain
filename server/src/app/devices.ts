@@ -5,7 +5,7 @@
 // waiting tool hears the answer through NOTIFY from whichever server took it.
 
 import type {Sql} from '../db/index.js';
-import type {Device, DeviceRegistration, DeviceRequest, DeviceResult} from '../shared/types.js';
+import type {Device, DeviceConfirm, DeviceRegistration, DeviceRequest, DeviceResult} from '../shared/types.js';
 import {
     answerDeviceRequest, cleanupDeviceRequests, closeDeviceRequest, createDeviceRequest, deleteDevice, deviceOffline, type DeviceRow, devicesOfNodeOffline,
     getDevice, getDeviceRequest, grantedDevices, listDevices, onlineDevices, pendingDeviceRequests, registerDevice, touchDevices, updateDevice,
@@ -101,6 +101,35 @@ export class Devices {
         }
     }
 
+    // What the device is doing, for the person's other screens: the little
+    // Captain shows Chrome work this way. Not stored.
+    async progress(userId: string, connectionId: string, requestId: string, p: {text?: string; site?: string; thumb?: string}): Promise<void> {
+        const req = await getDeviceRequest(this.sql, requestId);
+        if (!req || req.userId !== userId) {
+            return;
+        }
+        const device = await getDevice(this.sql, req.deviceId);
+        if (!device || device.connectionId !== connectionId) {
+            return;
+        }
+        const thumb = p.thumb && /^data:image\/(jpeg|png|webp);base64,/.test(p.thumb) ? p.thumb : undefined;
+        this.ctx?.hub.publish([userId], {event: 'device_progress', data: {
+            deviceId: device.id, kind: device.kind, runId: req.runId, text: p.text || 'Working', site: p.site, thumb, background: device.kind === 'chrome', at: Date.now(),
+        }});
+    }
+
+    // "Show me": the device brings what it's working in to the front.
+    async show(user: UserRow, deviceId: string): Promise<void> {
+        const device = await getDevice(this.sql, deviceId);
+        if (!device) {
+            throw notFound('Device');
+        }
+        if (device.userId !== user.id) {
+            throw forbidden('That device is not yours.');
+        }
+        this.ctx?.hub.publish([user.id], {event: 'device_show', data: {deviceId}});
+    }
+
     // ---- for tools
 
     async online(user: UserRow): Promise<DeviceRow[]> {
@@ -146,7 +175,7 @@ export class Devices {
                 cleanup();
                 const value = (row.result ?? {}) as DeviceResult & {error?: string};
                 if (row.status === 'done') {
-                    resolve({text: value.text, images: value.images});
+                    resolve({text: value.text, images: value.images, needsConfirm: value.needsConfirm, needsPerson: value.needsPerson});
                 } else {
                     reject(new Error(value.error || 'The device couldn\'t do that.'));
                 }
@@ -184,12 +213,31 @@ export class Devices {
     }
 }
 
-// Only what a device may send back: a bounded text and a few PNG/JPEG data URLs.
-function normalizeResult(raw: unknown): DeviceResult {
+// Only what a device may send back: a bounded text, a few PNG/JPEG data URLs,
+// and (instead of acting) a request to confirm, or a note that a person is needed.
+export function normalizeResult(raw: unknown): DeviceResult {
     const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
     const text = typeof r.text === 'string' ? r.text.slice(0, 60_000) : undefined;
     const images = Array.isArray(r.images) ? r.images.filter((i): i is string => typeof i === 'string' && /^data:image\/(png|jpeg|webp);base64,/.test(i) && i.length < 6_000_000).slice(0, 2) : undefined;
-    return {text, images: images?.length ? images : undefined};
+    const needsPerson = typeof r.needsPerson === 'string' && r.needsPerson.trim() ? r.needsPerson.trim().slice(0, 500) : undefined;
+    return {text, images: images?.length ? images : undefined, needsConfirm: confirmOf(r.needsConfirm), needsPerson};
+}
+
+function confirmOf(raw: unknown): DeviceConfirm | undefined {
+    if (!raw || typeof raw !== 'object') {
+        return undefined;
+    }
+    const c = raw as Record<string, unknown>;
+    const s = (v: unknown, n: number) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, n) : '');
+    const action = s(c.action, 120);
+    const target = s(c.target, 500);
+    if (!action || !target) {
+        return undefined;
+    }
+    const details = Array.isArray(c.details) ?
+        c.details.flatMap((d) => (d && typeof d === 'object' ? [{label: s((d as Record<string, unknown>).label, 40), value: s((d as Record<string, unknown>).value, 400)}] : [])).filter((d) => d.label && d.value).slice(0, 8) :
+        [];
+    return {action, target, site: s(c.site, 120) || undefined, details};
 }
 
 // ------------------------------------------------------------ for the API and tools

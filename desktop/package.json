@@ -12,7 +12,8 @@
     "bundle:server": "node scripts/bundle-server.mjs",
     "bundle:extension": "node scripts/bundle-extension.mjs",
     "build:extension": "tsc --noEmit && vite build --config vite.extension.config.ts",
-    "build:voice": "node scripts/build-voice.mjs"
+    "build:voice": "node scripts/build-voice.mjs",
+    "test": "node --test test/*.test.ts"
   },
   "dependencies": {
     "@fontsource-variable/manrope": "^5.3.0",

@@ -13,3 +13,6 @@ desktop/src-tauri/resources/extension/*
 desktop/dist-extension/
 desktop/src-tauri/binaries/captain-voice-*
 desktop/src-tauri/binaries/captain-desk-*
+
+# Screenshots from the extension test (server/test/e2e)
+server/test/e2e/evidence/

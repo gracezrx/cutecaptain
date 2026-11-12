@@ -17,7 +17,7 @@
 import {invoke} from '@tauri-apps/api/core';
 import {emitTo, listen} from '@tauri-apps/api/event';
 import {currentMonitor, getCurrentWindow, PhysicalPosition, PhysicalSize} from '@tauri-apps/api/window';
-import {Check, ChevronDown, Hash, MousePointerClick, TextCursorInput, VolumeX, X} from 'lucide-react';
+import {Check, ChevronDown, Globe, Hash, MousePointerClick, TextCursorInput, VolumeX, X} from 'lucide-react';
 import {useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
 
 import {portraitSrc} from '../components/Avatar';
@@ -384,7 +384,9 @@ export function Orb() {
                 setPhase((p) => (p === 'working' ? 'idle' : p));
             }
             followUps.current.add(r.id);
-            showNotice({text: `Needs your OK: ${r.text}`, tone: 'info', action: {label: 'Decide', run: () => void showPanel({mode: 'thread', channelId: r.channelId, postId: r.postId})}});
+            // A hand-over ("Your turn: sign in to Gmail") reads as itself.
+            const yourTurn = /^your turn:/i.test(r.text);
+            showNotice({text: yourTurn ? r.text : `Needs your OK: ${r.text}`, tone: 'info', action: {label: yourTurn ? 'Open' : 'Decide', run: () => void showPanel({mode: 'thread', channelId: r.channelId, postId: r.postId})}});
         } else if (r.type === 'error') {
             followUps.current.delete(r.id);
             if (mine) {
@@ -413,12 +415,14 @@ export function Orb() {
     // An agent working on this Mac: show each step; Esc or Stop ends it.
     useTauriEvent<DriveActivity>('device-activity', (a) => {
         if (a.phase === 'working') {
-            setDrive(a);
+            // Keep the last picture until a new one comes (not every step has one).
+            setDrive((prev) => ({...a, thumb: a.thumb ?? (prev && prev.where === a.where && prev.runId === a.runId ? prev.thumb : undefined)}));
             return;
         }
         setDrive(null);
+        const where = a.where === 'chrome' ? 'in Chrome' : 'on this Mac';
         if (a.phase === 'stopped') {
-            showNotice({text: a.text === 'Done' ? 'Done on this Mac.' : `Stopped working on this Mac.`, tone: 'info'}, 2500);
+            showNotice({text: a.text === 'Done' ? `Done ${where}.` : `Stopped working ${where}.`, tone: 'info'}, 2500);
         } else if (a.phase === 'error') {
             showNotice({text: a.text, tone: 'error'}, 8000);
         }
@@ -744,7 +748,7 @@ export function Orb() {
     // While it works, the agents on it peek out beside the Captain.
     const teamFaces = (task && card !== 'sent' ? (task.team.length ? task.team.map((h) => orb.directory.agents.find((a) => a.handle === h)) : [agentByName(task.lead)]) : []).
         filter((a): a is DirectoryAgent => Boolean(a && !a.isCoordinator)).slice(0, 3);
-    const label = phase === 'listening' ? 'Captain is listening. Let go to send.' : drive ? `Captain is working on this Mac: ${drive.text}. Press Esc to stop.` : task ? 'Captain is working. Hover to see how it\'s going.' : `Captain: hold to talk, click to open.${orb.needsYou ? ` ${orb.needsYou} need you.` : ''}`;
+    const label = phase === 'listening' ? 'Captain is listening. Let go to send.' : drive ? (drive.where === 'chrome' ? `Captain is working in ${drive.site ?? 'Chrome'}, in a background tab: ${drive.text}.` : `Captain is working on this Mac: ${drive.text}. Press Esc to stop.`) : task ? 'Captain is working. Hover to see how it\'s going.' : `Captain: hold to talk, click to open.${orb.needsYou ? ` ${orb.needsYou} need you.` : ''}`;
     const sendWord = mode === 'type' ? 'type it' : 'send';
     const sendHint = how === 'hold' ? `Let go to ${sendWord}` : how === 'key' ? `Let go to ${sendWord}` : `Click again to ${sendWord}`;
 
@@ -888,17 +892,29 @@ export function Orb() {
                 {card === 'drive' && drive && (
                     <div className='fc-card fc-drive' style={{width: 360, gap: 8}}>
                         <div style={{display: 'flex', alignItems: 'center', gap: 10}}>
-                            <span className='fc-icon-tile' style={{width: 30, height: 30}}><MousePointerClick size={16}/></span>
+                            <span className='fc-icon-tile' style={{width: 30, height: 30}}>{drive.where === 'chrome' ? <Globe size={16}/> : <MousePointerClick size={16}/>}</span>
                             <div style={{display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flex: 1}}>
-                                <span style={{fontSize: 14.5, fontWeight: 800}}>Working on this Mac</span>
+                                <span style={{fontSize: 14.5, fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{drive.where === 'chrome' ? `Working in ${drive.site ?? 'Chrome'}` : 'Working on this Mac'}</span>
                                 <span style={{fontSize: 12.5, fontWeight: 600, color: '#4f5c78', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{drive.text}</span>
                             </div>
+                            {drive.where === 'chrome' && drive.deviceId && (
+                                <button type='button' className='fc-btn fc-btn-ghost' onPointerDown={(e) => e.stopPropagation()} onClick={() => void emitTo('main', 'orb-show-device', {deviceId: drive.deviceId})}>Show me</button>
+                            )}
                             <button type='button' className='fc-btn fc-btn-ghost' onPointerDown={(e) => e.stopPropagation()} onClick={() => {
                                 void emitTo('main', 'orb-stop-drive', {});
                                 setDrive(null);
                             }}>Stop</button>
                         </div>
-                        <div className='fc-foot'>Hands off the mouse and keyboard while it works. <span className='fc-kbd'>Esc</span> stops it any time.</div>
+                        {drive.thumb && (
+                            <div className='fc-drive-view' aria-label={`What Captain sees in ${drive.site ?? 'the tab'}`}>
+                                <img src={drive.thumb} alt='' draggable={false}/>
+                            </div>
+                        )}
+                        <div className='fc-foot'>
+                            {drive.where === 'chrome' ?
+                                <>In Captain&apos;s own tab, in the background: keep using your browser. Anything it sends waits for your OK.</> :
+                                <>Hands off the mouse and keyboard while it works. <span className='fc-kbd'>Esc</span> stops it any time.</>}
+                        </div>
                     </div>
                 )}
 
