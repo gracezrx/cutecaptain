@@ -86,7 +86,7 @@ jobs:
           log="$RUNNER_TEMP/build.log"
           [ -f "$log" ] || exit 0
           enc() { sed 's/%/%25/g; s/\r//g' | awk 'BEGIN{ORS="%0A"} {print}'; }
-          if grep -q "Finished" "$log" && [ -d desktop/src-tauri/target/release/bundle/macos/Captain.app ]; then
+          if grep -q "Finished" "$log" && [ -d desktop/src-tauri/target/release/bundle/macos/cutecaptain.app ]; then
             echo "::notice title=Rust warnings::$(grep -A6 '^warning' "$log" | head -80 | enc)"
           else
             echo "::error title=Build output::$(grep -v '^\s*Compiling ' "$log" | tail -n 70 | enc)"
@@ -102,19 +102,19 @@ jobs:
           set -e
           out="$RUNNER_TEMP/captain"
           mkdir -p "$out"
-          (cd desktop/dist-extension && zip -qr "$out/Captain-Chrome-extension.zip" .)
+          (cd desktop/dist-extension && zip -qr "$out/cutecaptain-Chrome-extension.zip" .)
           bundle=desktop/src-tauri/target/release/bundle
-          app="$bundle/macos/Captain.app"
+          app="$bundle/macos/cutecaptain.app"
           test -f "$app/Contents/Resources/server/dist/src/main.js" || { echo "::error::The built-in server is missing from the app"; exit 1; }
-          ditto -c -k --keepParent "$app" "$out/Captain-mac.zip"
-          cp "$bundle"/dmg/*.dmg "$out/Captain.dmg"
+          ditto -c -k --keepParent "$app" "$out/cutecaptain-mac.zip"
+          cp "$bundle"/dmg/*.dmg "$out/cutecaptain.dmg"
           codesign -dv "$app" 2>&1 | grep -E "Signature|Identifier" || true
-          echo "::notice title=Sizes::app $(du -sh "$app" | cut -f1), dmg $(du -h "$out/Captain.dmg" | cut -f1), zip $(du -h "$out/Captain-mac.zip" | cut -f1)"
+          echo "::notice title=Sizes::app $(du -sh "$app" | cut -f1), dmg $(du -h "$out/cutecaptain.dmg" | cut -f1), zip $(du -h "$out/cutecaptain-mac.zip" | cut -f1)"
           echo "dir=$out" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Captain-mac
+          name: cutecaptain-mac
           path: ${{ steps.files.outputs.dir }}
           retention-days: 14
 
@@ -125,6 +125,6 @@ jobs:
         run: |
           gh release delete app-latest --yes --cleanup-tag || true
           gh release create app-latest --prerelease --target "$GITHUB_SHA" \
-            --title "Captain for Mac (latest build)" \
-            --notes "Built from ${GITHUB_SHA::7}. Mac: download Captain.dmg, open it, and drag Captain to Applications. If it isn't notarized yet, right-click Captain and choose Open the first time. Chrome: unzip Captain-Chrome-extension.zip, open chrome://extensions, turn on Developer mode, and choose Load unpacked." \
-            "${{ steps.files.outputs.dir }}/Captain.dmg" "${{ steps.files.outputs.dir }}/Captain-mac.zip" "${{ steps.files.outputs.dir }}/Captain-Chrome-extension.zip"
+            --title "cutecaptain for Mac (latest build)" \
+            --notes "Built from ${GITHUB_SHA::7}. Mac: download cutecaptain.dmg, open it, and drag cutecaptain to Applications. If it isn't notarized yet, right-click cutecaptain and choose Open the first time. Chrome: unzip cutecaptain-Chrome-extension.zip, open chrome://extensions, turn on Developer mode, and choose Load unpacked." \
+            "${{ steps.files.outputs.dir }}/cutecaptain.dmg" "${{ steps.files.outputs.dir }}/cutecaptain-mac.zip" "${{ steps.files.outputs.dir }}/cutecaptain-Chrome-extension.zip"
