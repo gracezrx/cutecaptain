@@ -5,7 +5,7 @@
 // open and read pages, click and type (browser.ts).
 // It shares the signed-in session with the popup through chrome.storage.
 
-import {BROWSER_CAPABILITIES, describeBrowser, runBrowser} from './browser';
+import {BROWSER_CAPABILITIES, describeBrowser, isBrowserAction, releaseWork, runBrowser, showWorkingTab, workingView} from './browser';
 
 type StoredSession = {serverUrl: string; token: string; userId: string};
 
@@ -168,7 +168,17 @@ function dropWs(): void {
     old?.close();
 }
 
-async function connectDevice(fresh = false): Promise<void> {
+// One connection attempt at a time: two overlapping ones (a sign-in and the
+// agents switch changing together, the alarm firing during startup) could
+// otherwise both open a socket, and every request would be done twice.
+let connecting: Promise<void> = Promise.resolve();
+
+function connectDevice(fresh = false): Promise<void> {
+    connecting = connecting.catch(() => undefined).then(() => connectOnce(fresh));
+    return connecting;
+}
+
+async function connectOnce(fresh: boolean): Promise<void> {
     const s = await session();
     const on = await agentsOn();
     const key = s ? `${s.serverUrl}|${s.token}` : null;
@@ -190,6 +200,9 @@ async function connectDevice(fresh = false): Promise<void> {
         socket.send(JSON.stringify({action: 'auth', seq: seq++, token: s.token}));
     };
     socket.onmessage = (m) => {
+        if (ws !== socket) {
+            return; // an old socket on its way out: only the current one acts
+        }
         let msg: Record<string, any>;
         try {
             msg = JSON.parse(String(m.data));
@@ -211,7 +224,10 @@ async function connectDevice(fresh = false): Promise<void> {
         }
         if (msg.event === 'device_request' && msg.data?.deviceId === deviceId) {
             handle(msg.data as DeviceRequest);
-        } else if (msg.event === 'device_released') {
+        } else if (msg.event === 'device_show' && msg.data?.deviceId === deviceId) {
+            void showWorkingTab();
+        } else if (msg.event === 'device_released' && msg.data?.deviceId === deviceId) {
+            void releaseWork();
             void setTitle('Captain · agents can use this Chrome');
         }
     };
@@ -235,10 +251,17 @@ async function connectDevice(fresh = false): Promise<void> {
 // Requests run one at a time, in order (one mouse, one keyboard).
 function handle(req: DeviceRequest): void {
     queue = queue.catch(() => undefined).then(async () => {
-        await setTitle(`Captain · ${describeBrowser(req.tool, req.args)}`);
+        const doing = describeBrowser(req.tool, req.args);
+        await setTitle(`Captain · ${doing}`);
+        // The little Captain (on the Mac) shows what's happening here.
+        sendWs({action: 'device_progress', requestId: req.id, text: doing, ...(await workingView(false).catch(() => ({})))});
         try {
             const result = await runBrowser(req.tool, req.args);
             answer(req, {ok: true, result});
+            if (isBrowserAction(req.tool) && !result.needsConfirm && !result.needsPerson) {
+                const view = await workingView(true).catch(() => ({}));
+                sendWs({action: 'device_progress', requestId: req.id, text: doing, ...view});
+            }
         } catch (e) {
             answer(req, {ok: false, error: (e as Error)?.message || 'That didn\'t work in Chrome.'});
         }

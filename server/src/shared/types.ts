@@ -108,6 +108,10 @@ export type DecisionCard = {
     decidedAt: Ms | null;
     note?: string | null; // "Change it": what the person asked to change
     timedOut?: boolean; // expired because nobody answered in a week
+    // 'handover': the agent paused for the person to do something themselves
+    // (sign in, enter a code): "Done, carry on" / "Stop" instead of Approve / Decline.
+    kind?: 'approval' | 'handover';
+    deviceId?: ID | null; // the device to bring forward with "Show me"
 };
 
 export type PostType = '' | 'system' | 'plan' | 'decision' | 'agent_step';
@@ -301,7 +305,12 @@ export type ServerEvent =
     // A device of yours came online, went offline, or had its settings changed.
     | {event: 'device_updated'; data: {device: Device}}
     // The run that was using a device ended or was stopped: the device can relax.
-    | {event: 'device_released'; data: {deviceId: ID; runId: ID}};
+    | {event: 'device_released'; data: {deviceId: ID; runId: ID}}
+    // What a device is doing right now, for the person's other screens (the
+    // little Captain shows Chrome work this way). Live only, never stored.
+    | {event: 'device_progress'; data: DeviceProgress}
+    // "Show me": bring the tab or app an agent is working in to the front.
+    | {event: 'device_show'; data: {deviceId: ID}};
 
 export type EventName = ServerEvent['event'];
 export type EventEnvelope = ServerEvent & {seq: number};
@@ -314,7 +323,9 @@ export type ClientMessage =
     // This connection is a device agents can use (the Mac app, the Chrome extension).
     | {action: 'device_register'; seq: number; device: DeviceRegistration}
     // The device's answer to a device_request.
-    | {action: 'device_result'; seq: number; requestId: ID; ok: boolean; result?: unknown; error?: string};
+    | {action: 'device_result'; seq: number; requestId: ID; ok: boolean; result?: unknown; error?: string}
+    // While working: what it's doing and a small picture of it.
+    | {action: 'device_progress'; seq: number; requestId: ID; text?: string; site?: string; thumb?: string};
 
 // ------------------------------------------------------------ devices
 //
@@ -355,7 +366,37 @@ export type DeviceRequest = {
 
 // What a device sends back for a request. `images` are data URLs the model
 // sees (screenshots); `text` is what it reads.
-export type DeviceResult = {text?: string; images?: string[]};
+//
+// A device stops short of anything that sends, pays, posts or deletes and
+// answers `needsConfirm` instead; the server turns that into an approval
+// card and, once approved, sends the same request again with
+// `args.confirm` set to `target`. `needsPerson` says only a person can go on
+// (a password, a code, a CAPTCHA).
+export type DeviceResult = {
+    text?: string;
+    images?: string[];
+    needsConfirm?: DeviceConfirm;
+    needsPerson?: string;
+    thumb?: string; // a small JPEG of where it's working, for the little Captain
+};
+
+export type DeviceConfirm = {
+    action: string; // 'Click "Send"'
+    target: string; // what the device will check again before acting
+    site?: string; // 'mail.google.com', 'Mail'
+    details?: {label: string; value: string}[]; // To, Subject, the start of the body…
+};
+
+export type DeviceProgress = {
+    deviceId: ID;
+    kind: DeviceKind;
+    runId: ID | null;
+    text: string; // 'Typing in "Subject"'
+    site?: string; // 'Gmail', 'mail.google.com'
+    thumb?: string; // data:image/jpeg;base64,… (small)
+    background?: boolean; // in a tab you're not looking at
+    at: Ms;
+};
 
 export type ApiError = {error: string; message: string; status: number};
 

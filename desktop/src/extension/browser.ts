@@ -1,18 +1,30 @@
 // An agent's browser_* request, done in this Chrome (from the background
-// worker). Pages are read as a snapshot: every link, button and field gets
-// an id like e12 that the agent clicks and types by. Reading and clicking
-// run as scripts in the page; keys go through Chrome's debugger when that
-// permission is on, so Enter really submits.
+// worker). Agents work in Captain's own tabs, in a collapsed "Captain" group
+// in the background, so the person keeps using theirs; Captain never
+// navigates a tab it didn't open. Pages are read as a snapshot: every link,
+// button and field gets an id like e12 that the agent clicks and types by.
+// Reading and clicking run as scripts in the page; keys, pixel actions and
+// pictures of background tabs go through Chrome's debugger when that
+// permission is on.
+//
+// Before anything that sends, posts, pays, books or deletes, the extension
+// stops and answers `needsConfirm` (lib/gate.ts); the server asks the person
+// and, once approved, sends the request again with `confirm`. It never
+// types into password, code or card fields, and never works on banking,
+// payment or account-security sites.
 
+import {blockedSite, cardDetails, displayLabel, isOutbound, isSecretField, isSendKey, SECRET_REFUSAL, targetOf} from '../lib/gate';
 import type {DeviceResult} from '../lib/types';
 
-export const BROWSER_CAPABILITIES = ['browser_tabs', 'browser_open', 'browser_switch', 'browser_snapshot', 'browser_read', 'browser_click', 'browser_type', 'browser_press', 'browser_select', 'browser_scroll', 'browser_screenshot', 'browser_wait', 'browser_back', 'browser_close'];
+export const BROWSER_CAPABILITIES = [
+    'browser_tabs', 'browser_open', 'browser_switch', 'browser_snapshot', 'browser_read', 'browser_click', 'browser_type', 'browser_press', 'browser_select',
+    'browser_scroll', 'browser_screenshot', 'browser_wait', 'browser_back', 'browser_close',
+    'browser_input', // pixel actions, for the computer-use engine
+    'confirm_gate', // stops before Send, Pay, Delete… and refuses password fields
+];
 
 const SNAPSHOT_CHARS = 14_000;
 const READ_CHARS = 40_000;
-
-let workingTab: number | null = null;
-const opened = new Set<number>(); // tabs the agent opened (it may close these)
 
 // ------------------------------------------------------------ in the page
 //
@@ -360,6 +372,111 @@ function pageHasText(text: string): boolean {
     return (document.body?.innerText ?? '').toLowerCase().includes(text.toLowerCase());
 }
 
+// What an action is about to touch, for the gate (lib/gate.ts) in the
+// worker: the element's label and role, whether it's a secret field, the
+// visible fields around it (To, Subject, the body…), and for a key press in
+// a message box, the label of the button that key would press.
+type Described = {
+    label: string;
+    role: string;
+    secret: {type: string; autocomplete: string; label: string} | null;
+    details: {label: string; value: string}[];
+    sendLabel: string;
+    editable: boolean;
+};
+
+function pageDescribe(mode: string, ref: string | null, x: number, y: number): Described | null {
+    const clean = (s: string | null | undefined, n = 80) => (s ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
+    const labelOf = (e: Element): string => {
+        const h = e as HTMLElement;
+        const i = e as HTMLInputElement;
+        const labelled = h.getAttribute('aria-labelledby')?.split(/\s+/).map((id) => clean(document.getElementById(id)?.textContent)).filter(Boolean).join(' ');
+        const byFor = i.id ? clean(document.querySelector(`label[for="${CSS.escape(i.id)}"]`)?.textContent) : '';
+        return clean(h.getAttribute('aria-label')) || labelled || byFor || clean(h.getAttribute('data-tooltip')) || clean(h.title) ||
+            (i.tagName === 'INPUT' && ['submit', 'button'].includes(i.type) ? clean(i.value) : '') || clean(h.innerText || h.textContent) || clean(i.placeholder) || clean(i.name);
+    };
+    const visible = (e: Element) => {
+        const r = e.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility !== 'hidden';
+    };
+    let el: Element | null = null;
+    if (mode === 'ref' && ref) {
+        el = window.__captainRefs?.map.get(ref) ?? null;
+    } else if (mode === 'last') {
+        el = window.__captainLast ?? null;
+    } else if (mode === 'point') {
+        el = document.elementFromPoint(x, y);
+    } else {
+        el = document.activeElement;
+        // Inside an iframe on the same page: follow the focus in.
+        while (el && el.tagName === 'IFRAME') {
+            try {
+                el = (el as HTMLIFrameElement).contentDocument?.activeElement ?? el;
+                if (el?.tagName === 'IFRAME') {
+                    break;
+                }
+            } catch {
+                break;
+            }
+        }
+    }
+    if (!el) {
+        return null;
+    }
+    const clickable = mode === 'active' ? el : el.closest('button, a[href], [role="button"], [role="link"], [role="menuitem"], [role="option"], [role="tab"], input[type="submit"], input[type="button"], summary') ?? el;
+    const field = el as HTMLInputElement;
+    const isInput = field.tagName === 'INPUT' || field.tagName === 'TEXTAREA';
+    const editable = isInput || (el as HTMLElement).isContentEditable;
+    const secret = isInput || (el as HTMLElement).isContentEditable ?
+        {type: field.type ?? '', autocomplete: field.getAttribute('autocomplete') ?? '', label: labelOf(el)} :
+        null;
+
+    // The fields around it: the form, the dialog (a compose window), or the region.
+    const box = clickable.closest('form, [role="dialog"], [role="region"], [role="main"], dialog') ?? document.body;
+    const details: {label: string; value: string}[] = [];
+    const emails = [...new Set([...box.querySelectorAll('[email]')].map((e) => e.getAttribute('email') ?? '').filter((v) => v.includes('@')))];
+    if (emails.length) {
+        details.push({label: 'To', value: emails.join(', ')});
+    }
+    for (const f of [...box.querySelectorAll('input, textarea, select, [contenteditable="true"], [contenteditable=""]')].slice(0, 60)) {
+        const i = f as HTMLInputElement;
+        if (!visible(f) || ['hidden', 'password', 'checkbox', 'radio', 'submit', 'button', 'file', 'image', 'reset'].includes((i.type ?? '').toLowerCase())) {
+            continue;
+        }
+        const value = f.tagName === 'SELECT' ? clean((f as HTMLSelectElement).selectedOptions[0]?.text, 300) : clean(i.value ?? (f as HTMLElement).innerText, 300) || clean((f as HTMLElement).innerText, 300);
+        const label = labelOf(f).replace(/\s*recipients?$/i, '') || 'Field';
+        if (value && !/^(search|search mail|search in mail)$/i.test(label)) {
+            details.push({label, value});
+        }
+        if (details.length >= 8) {
+            break;
+        }
+    }
+
+    // A key press in a field: what would it press? The form's submit button,
+    // or a Send/Post button next to a message box.
+    let sendLabel = '';
+    if (mode === 'active' && editable) {
+        const form = el.closest('form');
+        if (form && field.tagName !== 'TEXTAREA' && !(el as HTMLElement).isContentEditable) {
+            const submit = form.querySelector('button[type="submit"], input[type="submit"], button:not([type])');
+            sendLabel = submit ? labelOf(submit) : '';
+        } else {
+            let up: Element | null = el.parentElement;
+            for (let i = 0; up && i < 8 && !sendLabel; i++, up = up.parentElement) {
+                const b = [...up.querySelectorAll('button, [role="button"], input[type="submit"]')].find((c) => visible(c) && /\b(send|post|reply|submit|comment|tweet|share)\b/i.test(labelOf(c)));
+                sendLabel = b ? labelOf(b) : '';
+            }
+        }
+    }
+    return {label: labelOf(clickable), role: clickable.getAttribute('role') ?? clickable.tagName.toLowerCase(), secret, details, sendLabel, editable};
+}
+
+// The page's size in CSS pixels (what screenshots and pixel actions use).
+function pageViewport(): {width: number; height: number; dpr: number; url: string; title: string} {
+    return {width: window.innerWidth, height: window.innerHeight, dpr: window.devicePixelRatio || 1, url: location.href, title: document.title};
+}
+
 // ------------------------------------------------------------ in the worker
 
 class BrowserError extends Error {}
@@ -381,6 +498,70 @@ async function run<T>(tabId: number, func: (...a: never[]) => T, args: unknown[]
     return results[0].result as T;
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
+    return Promise.race([p, sleep(ms).then(() => null)]);
+}
+
+function hostOf(url: string | undefined): string {
+    try {
+        return new URL(url ?? '').hostname;
+    } catch {
+        return '';
+    }
+}
+
+const SITE_NAMES: Record<string, string> = {
+    'mail.google.com': 'Gmail', 'calendar.google.com': 'Google Calendar', 'docs.google.com': 'Google Docs', 'drive.google.com': 'Google Drive',
+    'outlook.office.com': 'Outlook', 'outlook.live.com': 'Outlook', 'app.slack.com': 'Slack', 'www.notion.so': 'Notion', 'chatgpt.com': 'ChatGPT',
+    'x.com': 'X', 'www.linkedin.com': 'LinkedIn',
+};
+
+function siteName(host: string): string {
+    return SITE_NAMES[host] ?? host.replace(/^www\./, '');
+}
+
+// ---- Captain's tabs
+//
+// Agents work in tabs Captain opened, in a collapsed "Captain" group, never
+// made active: the person keeps using their own tabs. Captain never
+// navigates a tab it didn't open. Kept in session storage so a worker that
+// Chrome put to sleep still knows its tabs.
+
+let workingTab: number | null = null;
+const opened = new Set<number>();
+let groupId: number | null = null;
+let loaded = false;
+
+async function load(): Promise<void> {
+    if (loaded) {
+        return;
+    }
+    loaded = true;
+    const s = await chrome.storage.session.get('captain.tabs').catch(() => ({} as Record<string, unknown>));
+    const saved = s['captain.tabs'] as {working: number | null; opened: number[]; group: number | null} | undefined;
+    if (saved) {
+        workingTab = saved.working;
+        saved.opened.forEach((id) => opened.add(id));
+        groupId = saved.group;
+    }
+}
+
+function save(): void {
+    void chrome.storage.session.set({'captain.tabs': {working: workingTab, opened: [...opened], group: groupId}}).catch(() => undefined);
+}
+
+chrome.tabs.onRemoved.addListener((id) => {
+    attached.delete(id);
+    if (opened.delete(id) || workingTab === id) {
+        if (workingTab === id) {
+            workingTab = null;
+        }
+        save();
+    }
+});
+
 async function tabById(id: number): Promise<chrome.tabs.Tab> {
     try {
         return await chrome.tabs.get(id);
@@ -389,12 +570,17 @@ async function tabById(id: number): Promise<chrome.tabs.Tab> {
     }
 }
 
+// The tab to work in: the one named, the one in use, or (for reading "the
+// page I have open") the person's active tab.
 async function currentTab(args: Record<string, unknown>): Promise<chrome.tabs.Tab> {
     const wanted = typeof args.tabId === 'number' ? args.tabId : workingTab;
     if (wanted !== null) {
         try {
             const t = await chrome.tabs.get(wanted);
-            workingTab = t.id ?? null;
+            if (workingTab !== t.id) {
+                workingTab = t.id ?? null;
+                save();
+            }
             return t;
         } catch {
             workingTab = null;
@@ -403,19 +589,40 @@ async function currentTab(args: Record<string, unknown>): Promise<chrome.tabs.Ta
     const [active] = await chrome.tabs.query({active: true, lastFocusedWindow: true});
     const tab = active ?? (await chrome.tabs.query({active: true}))[0];
     if (!tab?.id) {
-        throw new BrowserError('Chrome has no open tab. Use browser_open with newTab.');
+        throw new BrowserError('Chrome has no open tab. Use browser_open.');
     }
     workingTab = tab.id;
+    save();
     return tab;
 }
 
-async function bringForward(tab: chrome.tabs.Tab): Promise<void> {
-    if (tab.id && !tab.active) {
-        await chrome.tabs.update(tab.id, {active: true}).catch(() => undefined);
+async function intoGroup(tab: chrome.tabs.Tab): Promise<void> {
+    if (!tab.id || !chrome.tabGroups) {
+        return;
     }
-    if (tab.windowId) {
-        await chrome.windows.update(tab.windowId, {focused: true}).catch(() => undefined);
+    try {
+        if (groupId !== null) {
+            const g = await chrome.tabGroups.get(groupId).catch(() => null);
+            if (!g || g.windowId !== tab.windowId) {
+                groupId = null;
+            }
+        }
+        groupId = await chrome.tabs.group(groupId !== null ? {tabIds: [tab.id], groupId} : {tabIds: [tab.id], createProperties: {windowId: tab.windowId}});
+        await chrome.tabGroups.update(groupId, {title: 'Captain', color: 'blue', collapsed: true});
+    } catch {
+        // tab groups unavailable (an old Chrome, a popup window): an ordinary background tab is fine
     }
+}
+
+// A new Captain tab, in the background, in the window the person last used.
+async function captainTab(url: string): Promise<chrome.tabs.Tab> {
+    const win = await chrome.windows.getLastFocused({windowTypes: ['normal']}).catch(() => null);
+    const tab = await chrome.tabs.create({url, active: false, ...(win?.id ? {windowId: win.id} : {})});
+    opened.add(tab.id!);
+    workingTab = tab.id!;
+    save();
+    await intoGroup(tab);
+    return tab;
 }
 
 function waitLoaded(tabId: number, timeoutMs = 20_000): Promise<void> {
@@ -440,22 +647,60 @@ function waitLoaded(tabId: number, timeoutMs = 20_000): Promise<void> {
     });
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+async function settle(tabId: number, ms = 500): Promise<chrome.tabs.Tab> {
+    await sleep(ms);
+    const now = await tabById(tabId);
+    if (now.status === 'loading') {
+        await waitLoaded(tabId, 10_000);
+    }
+    return tabById(tabId);
+}
 
 async function snapshot(tab: chrome.tabs.Tab, filter = ''): Promise<string> {
     const s = await run(tab.id!, pageSnapshot, [filter, SNAPSHOT_CHARS]);
-    const head = `${s.title || '(untitled)'} — ${s.url}\n${s.count} elements with ids${filter ? ` matching "${filter}"` : ''}. Ids are good until the next snapshot or page change.`;
+    const where = opened.has(tab.id!) ? ' (Captain\'s tab, in the background)' : tab.active ? ' (the person\'s own tab, in front)' : '';
+    const head = `${s.title || '(untitled)'} — ${s.url}${where}\n${s.count} elements with ids${filter ? ` matching "${filter}"` : ''}. Ids are good until the next snapshot or page change.`;
     return `${head}\n\n${s.text || '(nothing readable; the page may still be loading — browser_wait, then snapshot again)'}`;
 }
 
-// Chrome's debugger gives real key presses (Enter submits, shortcuts work).
-// Only when that permission was granted (the popup asks).
+function notBlocked(tab: chrome.tabs.Tab | {url?: string}): void {
+    const host = hostOf(tab.url);
+    if (host && blockedSite(host)) {
+        throw new BrowserError(`Captain doesn't work on ${host} (banking, payments, passwords and account security stay with the person). Ask them to do this part.`);
+    }
+}
+
+// ---- Chrome's debugger: real key presses, pixel clicks and pictures of
+// background tabs. One session per tab, kept until the run ends (attaching
+// for every key makes Chrome's "started debugging" bar flicker).
+
+const attached = new Set<number>();
 let debuggerAllowed: boolean | null = null;
+
 async function canDebug(): Promise<boolean> {
     if (debuggerAllowed === null) {
         debuggerAllowed = await chrome.permissions.contains({permissions: ['debugger']}).catch(() => false);
     }
     return debuggerAllowed;
+}
+
+chrome.permissions?.onAdded?.addListener(() => {
+    debuggerAllowed = null;
+});
+chrome.debugger?.onDetach?.addListener((source) => {
+    if (source.tabId) {
+        attached.delete(source.tabId);
+    }
+});
+
+async function cdp<T = unknown>(tabId: number, method: string, params?: Record<string, unknown>): Promise<T> {
+    if (!attached.has(tabId)) {
+        await chrome.debugger.attach({tabId}, '1.3');
+        attached.add(tabId);
+        // Keep a background tab behaving as if it were in front (focus events, timers).
+        await chrome.debugger.sendCommand({tabId}, 'Emulation.setFocusEmulationEnabled', {enabled: true}).catch(() => undefined);
+    }
+    return (await chrome.debugger.sendCommand({tabId}, method, params)) as T;
 }
 
 const KEY_CODES: Record<string, {code: string; vk: number; text?: string}> = {
@@ -464,27 +709,29 @@ const KEY_CODES: Record<string, {code: string; vk: number; text?: string}> = {
     Home: {code: 'Home', vk: 36}, End: {code: 'End', vk: 35}, PageUp: {code: 'PageUp', vk: 33}, PageDown: {code: 'PageDown', vk: 34}, ' ': {code: 'Space', vk: 32, text: ' '},
 };
 const ALIASES: Record<string, string> = {enter: 'Enter', return: 'Enter', tab: 'Tab', esc: 'Escape', escape: 'Escape', backspace: 'Backspace', delete: 'Delete', del: 'Delete', up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', arrowup: 'ArrowUp', arrowdown: 'ArrowDown', arrowleft: 'ArrowLeft', arrowright: 'ArrowRight', home: 'Home', end: 'End', pageup: 'PageUp', pagedown: 'PageDown', space: ' '};
+const MODS: Record<string, string> = {command: 'cmd', meta: 'cmd', cmd: 'cmd', super: 'cmd', win: 'cmd', control: 'ctrl', ctrl: 'ctrl', option: 'alt', opt: 'alt', alt: 'alt', shift: 'shift'};
 
 function parseKey(combo: string): {key: string; mods: string[]} {
     const parts = combo.split('+').map((p) => p.trim()).filter(Boolean);
     const last = parts.pop() ?? '';
-    const mods = parts.map((m) => m.toLowerCase()).map((m) => ({command: 'cmd', meta: 'cmd', control: 'ctrl', option: 'alt'}[m] ?? m));
-    const key = ALIASES[last.toLowerCase()] ?? (last.length === 1 ? last : last);
+    const mods = parts.map((m) => MODS[m.toLowerCase()] ?? m.toLowerCase());
+    const key = ALIASES[last.toLowerCase()] ?? last;
     return {key, mods};
 }
 
+function modifierBits(mods: string[]): number {
+    return (mods.includes('alt') ? 1 : 0) | (mods.includes('ctrl') ? 2 : 0) | (mods.includes('cmd') ? 4 : 0) | (mods.includes('shift') ? 8 : 0);
+}
+
 async function debugPress(tabId: number, key: string, mods: string[]): Promise<void> {
-    await chrome.debugger.attach({tabId}, '1.3');
-    try {
-        const modifiers = (mods.includes('alt') ? 1 : 0) | (mods.includes('ctrl') ? 2 : 0) | (mods.includes('cmd') ? 4 : 0) | (mods.includes('shift') ? 8 : 0);
-        const special = KEY_CODES[key];
-        const base = special ? {key, code: special.code, windowsVirtualKeyCode: special.vk, nativeVirtualKeyCode: special.vk} : {key, code: key.length === 1 ? `Key${key.toUpperCase()}` : key, windowsVirtualKeyCode: key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0};
-        const text = special?.text ?? (key.length === 1 && !mods.includes('cmd') && !mods.includes('ctrl') ? key : undefined);
-        await chrome.debugger.sendCommand({tabId}, 'Input.dispatchKeyEvent', {type: text ? 'keyDown' : 'rawKeyDown', modifiers, ...base, ...(text ? {text, unmodifiedText: text} : {})});
-        await chrome.debugger.sendCommand({tabId}, 'Input.dispatchKeyEvent', {type: 'keyUp', modifiers, ...base});
-    } finally {
-        await chrome.debugger.detach({tabId}).catch(() => undefined);
-    }
+    const modifiers = modifierBits(mods);
+    const special = KEY_CODES[key];
+    const base = special ? {key, code: special.code, windowsVirtualKeyCode: special.vk, nativeVirtualKeyCode: special.vk} : {key, code: key.length === 1 ? `Key${key.toUpperCase()}` : key, windowsVirtualKeyCode: key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0};
+    const text = special?.text ?? (key.length === 1 && !mods.includes('cmd') && !mods.includes('ctrl') ? key : undefined);
+    // cmd+a, cmd+c, cmd+v… as editing commands: the page sees the key and the edit happens.
+    const commands = mods.includes('cmd') || mods.includes('ctrl') ? ({a: ['selectAll'], c: ['copy'], v: ['paste'], x: ['cut'], z: [mods.includes('shift') ? 'redo' : 'undo']} as Record<string, string[]>)[key.toLowerCase()] : undefined;
+    await cdp(tabId, 'Input.dispatchKeyEvent', {type: text ? 'keyDown' : 'rawKeyDown', modifiers, ...base, ...(text ? {text, unmodifiedText: text} : {}), ...(commands ? {commands} : {})});
+    await cdp(tabId, 'Input.dispatchKeyEvent', {type: 'keyUp', modifiers, ...base});
 }
 
 async function press(tab: chrome.tabs.Tab, combo: string): Promise<string> {
@@ -494,20 +741,238 @@ async function press(tab: chrome.tabs.Tab, combo: string): Promise<string> {
             await debugPress(tab.id!, key, mods);
             return `Pressed ${combo}.`;
         } catch {
-            // a page the debugger can't attach to: the DOM way
+            // a page the debugger can't attach to (DevTools open on it…): the DOM way
         }
     }
     const r = await run(tab.id!, pagePress, [key, mods]);
     return `Pressed ${combo}${r.note ? ` (${r.note})` : ''}.`;
 }
 
+// A picture of the tab, even in the background, at `width` pixels wide
+// (the page's own size when 0): through the debugger, which Chrome may
+// refuse for a tab it isn't painting, so it's best-effort and quick.
+async function picture(tab: chrome.tabs.Tab, opts: {width?: number; jpeg?: boolean; timeoutMs?: number} = {}): Promise<string | null> {
+    if (await canDebug()) {
+        try {
+            const vp = await run(tab.id!, pageViewport);
+            const target = opts.width || vp.width;
+            const shot = await withTimeout(cdp<{data: string}>(tab.id!, 'Page.captureScreenshot', {
+                format: opts.jpeg ? 'jpeg' : 'png', ...(opts.jpeg ? {quality: 55} : {}), fromSurface: true, captureBeyondViewport: false,
+                clip: {x: 0, y: 0, width: vp.width, height: vp.height, scale: target / (vp.width * vp.dpr)},
+            }), opts.timeoutMs ?? 2500);
+            if (shot?.data) {
+                return `data:image/${opts.jpeg ? 'jpeg' : 'png'};base64,${shot.data}`;
+            }
+        } catch {
+            // fall through
+        }
+    }
+    if (tab.active && !opts.jpeg) {
+        const win = await chrome.windows.get(tab.windowId).catch(() => null);
+        if (win?.focused) {
+            return chrome.tabs.captureVisibleTab(tab.windowId, {format: 'png'}).catch(() => null);
+        }
+    }
+    return null;
+}
+
+// ---- the gate (lib/gate.ts): stop before sending, paying, posting, deleting
+
+type Gate = {kind: 'click'; described: Described | null} | {kind: 'key'; described: Described | null; combo: string};
+
+function gateCheck(tab: chrome.tabs.Tab, g: Gate, confirm: unknown): DeviceResult | null {
+    const d = g.described;
+    if (!d) {
+        return null;
+    }
+    const host = hostOf(tab.url);
+    let label = '';
+    if (g.kind === 'click') {
+        label = isOutbound(d.label, host) ? d.label : '';
+    } else {
+        const {key, mods} = parseKey(g.combo);
+        if (isSendKey(g.combo) && d.editable) {
+            label = d.sendLabel && !isOutbound(d.sendLabel, host) ? '' : d.sendLabel || 'Send';
+            if (!d.sendLabel && /^(chatgpt\.com|chat\.openai\.com|gemini\.google\.com|claude\.ai)$/.test(host)) {
+                label = '';
+            }
+        } else if (key === 'Enter' && !mods.length && d.editable && d.sendLabel && isOutbound(d.sendLabel, host)) {
+            label = d.sendLabel;
+        }
+    }
+    if (!label) {
+        return null;
+    }
+    const details = cardDetails(d.details);
+    const target = targetOf(host, label, details);
+    if (confirm === target) {
+        return null;
+    }
+    const action = g.kind === 'click' ? `Click "${displayLabel(label)}"` : `Press ${g.combo} (${displayLabel(label)})`;
+    return {needsConfirm: {action, target, site: siteName(host), details: confirm ? [{label: 'Note', value: 'This changed after you approved it, so here it is again.'}, ...details].slice(0, 8) : details}};
+}
+
+function secretCheck(d: Described | null): DeviceResult | null {
+    return d?.secret && isSecretField(d.secret) ? {needsPerson: SECRET_REFUSAL} : null;
+}
+
+// ---- pixel actions (the computer-use engine on the server drives these)
+
+type PixelAction = {type: string; x?: number; y?: number; button?: string; keys?: string[]; path?: {x: number; y: number}[]; scroll_x?: number; scroll_y?: number; text?: string};
+
+const BUTTONS: Record<string, string> = {left: 'left', right: 'right', middle: 'middle', wheel: 'middle', back: 'back', forward: 'forward'};
+
+function cuaCombo(keys: string[]): string {
+    const map: Record<string, string> = {CTRL: 'ctrl', CONTROL: 'ctrl', CMD: 'cmd', META: 'cmd', COMMAND: 'cmd', SUPER: 'cmd', ALT: 'alt', OPTION: 'alt', SHIFT: 'shift', ENTER: 'Enter', RETURN: 'Enter', ESC: 'Escape', ESCAPE: 'Escape', TAB: 'Tab', BACKSPACE: 'Backspace', DELETE: 'Delete', SPACE: 'space', UP: 'ArrowUp', DOWN: 'ArrowDown', LEFT: 'ArrowLeft', RIGHT: 'ArrowRight', ARROWUP: 'ArrowUp', ARROWDOWN: 'ArrowDown', ARROWLEFT: 'ArrowLeft', ARROWRIGHT: 'ArrowRight', PAGEUP: 'PageUp', PAGEDOWN: 'PageDown', HOME: 'Home', END: 'End'};
+    return keys.map((k) => map[k.toUpperCase()] ?? (k.length === 1 ? k.toLowerCase() : k)).join('+');
+}
+
+async function mouse(tabId: number, type: string, x: number, y: number, extra: Record<string, unknown> = {}): Promise<void> {
+    await cdp(tabId, 'Input.dispatchMouseEvent', {type, x, y, ...extra});
+}
+
+async function pixel(tab: chrome.tabs.Tab, a: PixelAction, confirm: unknown): Promise<DeviceResult> {
+    if (!(await canDebug())) {
+        throw new BrowserError('Pixel actions need the debugger permission: in the Captain popup, turn "Let agents use this Chrome" off and on again.');
+    }
+    const id = tab.id!;
+    const x = Math.round(Number(a.x) || 0);
+    const y = Math.round(Number(a.y) || 0);
+    const mods = (a.keys ?? []).map((k) => MODS[k.toLowerCase()] ?? '').filter(Boolean);
+    const modifiers = modifierBits(mods);
+    switch (a.type) {
+    case 'screenshot': {
+        const img = await picture(tab, {timeoutMs: 4000});
+        if (!img) {
+            throw new BrowserError('Chrome isn\'t drawing this background tab, so there\'s no picture of it. Work from browser_snapshot, or ask the person to press Show me.');
+        }
+        return {text: 'The tab now.', images: [img]};
+    }
+    case 'click':
+    case 'double_click': {
+        const blocked = gateCheck(tab, {kind: 'click', described: await run(id, pageDescribe, ['point', null, x, y]).catch(() => null)}, confirm);
+        if (blocked) {
+            return blocked;
+        }
+        const button = BUTTONS[a.button ?? 'left'] ?? 'left';
+        const count = a.type === 'double_click' ? 2 : 1;
+        await mouse(id, 'mouseMoved', x, y, {modifiers});
+        for (let i = 1; i <= count; i++) {
+            await mouse(id, 'mousePressed', x, y, {button, clickCount: i, modifiers});
+            await mouse(id, 'mouseReleased', x, y, {button, clickCount: i, modifiers});
+        }
+        await settle(id, 400);
+        return {text: `${count === 2 ? 'Double-clicked' : 'Clicked'} (${x}, ${y}).`};
+    }
+    case 'move':
+        await mouse(id, 'mouseMoved', x, y, {modifiers});
+        return {text: `Moved to (${x}, ${y}).`};
+    case 'drag': {
+        const path = (a.path ?? []).map((p) => ({x: Math.round(p.x), y: Math.round(p.y)}));
+        if (path.length < 2) {
+            throw new BrowserError('A drag needs at least two points.');
+        }
+        await mouse(id, 'mouseMoved', path[0].x, path[0].y, {modifiers});
+        await mouse(id, 'mousePressed', path[0].x, path[0].y, {button: 'left', clickCount: 1, modifiers});
+        for (const p of path.slice(1)) {
+            await mouse(id, 'mouseMoved', p.x, p.y, {button: 'left', buttons: 1, modifiers});
+        }
+        const end = path[path.length - 1];
+        await mouse(id, 'mouseReleased', end.x, end.y, {button: 'left', clickCount: 1, modifiers});
+        return {text: `Dragged to (${end.x}, ${end.y}).`};
+    }
+    case 'scroll':
+        await mouse(id, 'mouseWheel', x, y, {deltaX: Number(a.scroll_x) || 0, deltaY: Number(a.scroll_y) || 0, modifiers});
+        await sleep(250);
+        return {text: 'Scrolled.'};
+    case 'keypress': {
+        const combo = cuaCombo(a.keys ?? []);
+        const d = await run(id, pageDescribe, ['active', null, 0, 0]).catch(() => null);
+        if (/v$/i.test(combo) && /(cmd|ctrl)\+/.test(combo)) {
+            const secret = secretCheck(d);
+            if (secret) {
+                return secret;
+            }
+        }
+        const blocked = gateCheck(tab, {kind: 'key', described: d, combo}, confirm);
+        if (blocked) {
+            return blocked;
+        }
+        const {key, mods: m} = parseKey(combo);
+        await debugPress(id, key, m);
+        await settle(id, 300);
+        return {text: `Pressed ${combo}.`};
+    }
+    case 'type': {
+        const secret = secretCheck(await run(id, pageDescribe, ['active', null, 0, 0]).catch(() => null));
+        if (secret) {
+            return secret;
+        }
+        await cdp(id, 'Input.insertText', {text: String(a.text ?? '')});
+        return {text: `Typed ${String(a.text ?? '').length} characters.`};
+    }
+    case 'wait':
+        await sleep(1500);
+        return {text: 'Waited.'};
+    default:
+        throw new BrowserError(`Unknown action ${a.type}.`);
+    }
+}
+
+// ---- for the background worker
+
+// "Show me": the tab an agent is working in, in front.
+export async function showWorkingTab(): Promise<void> {
+    await load();
+    if (workingTab === null) {
+        return;
+    }
+    const tab = await chrome.tabs.get(workingTab).catch(() => null);
+    if (!tab?.id) {
+        return;
+    }
+    if (chrome.tabGroups && tab.groupId !== undefined && tab.groupId >= 0) {
+        await chrome.tabGroups.update(tab.groupId, {collapsed: false}).catch(() => undefined);
+    }
+    await chrome.tabs.update(tab.id, {active: true}).catch(() => undefined);
+    await chrome.windows.update(tab.windowId, {focused: true}).catch(() => undefined);
+}
+
+// The run ended: let go of the debugger (its bar goes away) and fold the
+// group away. The tabs stay, in case the person wants to look.
+export async function releaseWork(): Promise<void> {
+    for (const tabId of [...attached]) {
+        await chrome.debugger.detach({tabId}).catch(() => undefined);
+        attached.delete(tabId);
+    }
+    if (groupId !== null && chrome.tabGroups) {
+        await chrome.tabGroups.update(groupId, {collapsed: true}).catch(() => undefined);
+    }
+}
+
+// What the little Captain shows while it works: the site and a small picture.
+export async function workingView(withPicture: boolean): Promise<{site?: string; thumb?: string}> {
+    if (workingTab === null) {
+        return {};
+    }
+    const tab = await chrome.tabs.get(workingTab).catch(() => null);
+    if (!tab) {
+        return {};
+    }
+    const site = siteName(hostOf(tab.url));
+    const thumb = withPicture ? await picture(tab, {width: 320, jpeg: true, timeoutMs: 1200}).catch(() => null) : null;
+    return {site, ...(thumb ? {thumb} : {})};
+}
+
+// ------------------------------------------------------------ requests
+
 export async function runBrowser(tool: string, a: Record<string, unknown>): Promise<DeviceResult> {
+    await load();
     const s = (v: unknown) => String(v ?? '');
     switch (tool) {
     case 'browser_tabs': {
         const tabs = await chrome.tabs.query({});
-        const cur = workingTab ?? (await currentTab({})).id;
-        const lines = tabs.filter((t) => t.id).map((t) => `[${t.id}] ${t.title || '(untitled)'} — ${t.url || t.pendingUrl || ''}${t.id === cur ? '  ← working here' : ''}${t.active ? ' (active)' : ''}`);
+        const lines = tabs.filter((t) => t.id).map((t) => `[${t.id}] ${t.title || '(untitled)'} — ${t.url || t.pendingUrl || ''}${t.id === workingTab ? '  ← working here' : ''}${opened.has(t.id!) ? ' (Captain\'s tab)' : t.active ? ' (the person\'s, in front)' : ''}`);
         return {text: lines.length ? lines.join('\n') : 'No tabs are open.'};
     }
     case 'browser_open': {
@@ -516,84 +981,110 @@ export async function runBrowser(tool: string, a: Record<string, unknown>): Prom
             throw new BrowserError('Say which address to open.');
         }
         if (!/^[a-z]+:/i.test(url)) {
-            url = /^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(url) ? `https://${url}` : `https://www.google.com/search?q=${encodeURIComponent(url)}`;
+            url = /^[\w.-]+\.[a-z]{2,}(\/|$|\?|#)/i.test(url) ? `https://${url}` : `https://www.google.com/search?q=${encodeURIComponent(url)}`;
         }
         if (!/^https?:/i.test(url)) {
             throw new BrowserError('Only http and https addresses open here.');
         }
+        notBlocked({url});
         let tab: chrome.tabs.Tab;
-        if (a.newTab || workingTab === null && !(await chrome.tabs.query({active: true, lastFocusedWindow: true}))[0]) {
-            tab = await chrome.tabs.create({url, active: true});
-            opened.add(tab.id!);
+        const mine = workingTab !== null && opened.has(workingTab) ? await chrome.tabs.get(workingTab).catch(() => null) : null;
+        if (a.newTab || !mine) {
+            tab = await captainTab(url);
         } else {
-            const t = await currentTab(a);
-            tab = (await chrome.tabs.update(t.id!, {url, active: true})) ?? t;
+            tab = (await chrome.tabs.update(mine.id!, {url})) ?? mine;
+            workingTab = tab.id!;
+            save();
         }
-        workingTab = tab.id!;
         await waitLoaded(tab.id!);
         await sleep(400);
         return {text: await snapshot(await tabById(tab.id!))};
     }
     case 'browser_switch': {
+        // Reading or working in one of the person's tabs, without bringing it forward.
         const tab = await tabById(Number(a.tabId));
+        notBlocked(tab);
         workingTab = tab.id!;
-        await bringForward(tab);
+        save();
         return {text: await snapshot(tab)};
     }
     case 'browser_snapshot': {
         const tab = await currentTab(a);
+        notBlocked(tab);
         return {text: await snapshot(tab, s(a.query))};
     }
     case 'browser_read': {
         const tab = await currentTab(a);
+        notBlocked(tab);
         const p = await run(tab.id!, pageRead);
         return {text: `${p.title} — ${p.url}\n\n${p.text.slice(0, READ_CHARS)}${p.text.length > READ_CHARS ? '\n\n[cut off here]' : ''}`};
     }
     case 'browser_click': {
         const tab = await currentTab(a);
+        notBlocked(tab);
         const found = await run(tab.id!, pageFind, [a.ref ? s(a.ref) : null, a.text ? s(a.text) : null]);
         if (!found.ok) {
             throw new BrowserError(found.error!);
+        }
+        const blocked = gateCheck(tab, {kind: 'click', described: await run(tab.id!, pageDescribe, ['last', null, 0, 0]).catch(() => null)}, a.confirm);
+        if (blocked) {
+            return blocked;
         }
         await sleep(80);
         const r = await run(tab.id!, pageClick);
         if (!r.ok) {
             throw new BrowserError(r.error!);
         }
-        await sleep(500);
-        const now = await tabById(tab.id!);
-        if (now.status === 'loading') {
-            await waitLoaded(tab.id!, 10_000);
-        }
-        return {text: `Clicked ${a.ref ? s(a.ref) : `"${s(a.text)}"`}.\n\n${await snapshot(await tabById(tab.id!))}`};
+        const now = await settle(tab.id!);
+        return {text: `Clicked ${a.ref ? s(a.ref) : `"${s(a.text)}"`}.\n\n${await snapshot(now)}`};
     }
     case 'browser_type': {
         const tab = await currentTab(a);
+        notBlocked(tab);
         const text = s(a.text);
+        const target = await run(tab.id!, pageDescribe, [a.ref ? 'ref' : 'active', a.ref ? s(a.ref) : null, 0, 0]).catch(() => null);
+        const secret = secretCheck(target);
+        if (secret) {
+            return secret;
+        }
         const r = await run(tab.id!, pageType, [a.ref ? s(a.ref) : null, text, Boolean(a.append)]);
         if (!r.ok) {
             throw new BrowserError(r.error!);
         }
         let note = `Typed ${text.length} characters${a.ref ? ` into ${s(a.ref)}` : ''}.`;
         if (a.submit) {
+            const blocked = gateCheck(tab, {kind: 'key', described: await run(tab.id!, pageDescribe, ['active', null, 0, 0]).catch(() => null), combo: 'Enter'}, a.confirm);
+            if (blocked) {
+                return blocked;
+            }
             await sleep(100);
             note += ` ${await press(tab, 'Enter')}`;
-            await sleep(600);
-            const now = await tabById(tab.id!);
-            if (now.status === 'loading') {
-                await waitLoaded(tab.id!, 10_000);
-            }
+            await settle(tab.id!, 600);
         }
         return {text: `${note}\n\n${await snapshot(await tabById(tab.id!), '')}`};
     }
     case 'browser_press': {
         const tab = await currentTab(a);
-        const note = await press(tab, s(a.key));
-        await sleep(400);
-        return {text: `${note}\n\n${await snapshot(await tabById(tab.id!))}`};
+        notBlocked(tab);
+        const combo = s(a.key);
+        const d = await run(tab.id!, pageDescribe, ['active', null, 0, 0]).catch(() => null);
+        if (/(cmd|ctrl|command|control|meta)\s*\+\s*v$/i.test(combo)) {
+            const secret = secretCheck(d);
+            if (secret) {
+                return secret;
+            }
+        }
+        const blocked = gateCheck(tab, {kind: 'key', described: d, combo}, a.confirm);
+        if (blocked) {
+            return blocked;
+        }
+        const note = await press(tab, combo);
+        const now = await settle(tab.id!, 400);
+        return {text: `${note}\n\n${await snapshot(now)}`};
     }
     case 'browser_select': {
         const tab = await currentTab(a);
+        notBlocked(tab);
         const r = await run(tab.id!, pageSelect, [s(a.ref), s(a.value)]);
         if (!r.ok) {
             throw new BrowserError(r.error!);
@@ -602,6 +1093,7 @@ export async function runBrowser(tool: string, a: Record<string, unknown>): Prom
     }
     case 'browser_scroll': {
         const tab = await currentTab(a);
+        notBlocked(tab);
         const r = await run(tab.id!, pageScroll, [s(a.direction) || 'down', a.ref ? s(a.ref) : null]);
         if (!r.ok) {
             throw new BrowserError(r.error!);
@@ -611,10 +1103,19 @@ export async function runBrowser(tool: string, a: Record<string, unknown>): Prom
     }
     case 'browser_screenshot': {
         const tab = await currentTab(a);
-        await bringForward(tab);
-        await sleep(250);
-        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {format: 'png'});
-        return {text: `The tab "${tab.title}" as seen now. For clicking, use ids from browser_snapshot.`, images: [dataUrl]};
+        notBlocked(tab);
+        const img = await picture(tab);
+        if (!img) {
+            return {text: `"${tab.title}" is in the background and Chrome isn't drawing it, so there's no picture right now. browser_snapshot reads it fine; if you really need to see it, ask the person to press Show me on the little Captain.`};
+        }
+        return {text: `The tab "${tab.title}" as it looks now. For clicking, use ids from browser_snapshot.`, images: [img]};
+    }
+    case 'browser_input': {
+        // One pixel action from the computer-use engine, in the working tab.
+        const tab = await currentTab(a);
+        notBlocked(tab);
+        const action = (a.action && typeof a.action === 'object' ? a.action : {}) as PixelAction;
+        return pixel(tab, action, a.confirm);
     }
     case 'browser_wait': {
         const tab = await currentTab(a);
@@ -635,6 +1136,9 @@ export async function runBrowser(tool: string, a: Record<string, unknown>): Prom
     }
     case 'browser_back': {
         const tab = await currentTab(a);
+        if (!opened.has(tab.id!)) {
+            throw new BrowserError('That\'s the person\'s own tab: Captain doesn\'t navigate it. Open what you need in a Captain tab (browser_open).');
+        }
         await chrome.tabs.goBack(tab.id!);
         await waitLoaded(tab.id!, 10_000);
         return {text: await snapshot(await tabById(tab.id!))};
@@ -642,18 +1146,24 @@ export async function runBrowser(tool: string, a: Record<string, unknown>): Prom
     case 'browser_close': {
         const id = Number(a.tabId);
         if (!opened.has(id)) {
-            throw new BrowserError('Only tabs you opened can be closed.');
+            throw new BrowserError('Only tabs Captain opened can be closed.');
         }
         await chrome.tabs.remove(id);
         opened.delete(id);
         if (workingTab === id) {
             workingTab = null;
         }
+        save();
         return {text: `Closed tab ${id}.`};
     }
     default:
         throw new BrowserError(`Chrome can't do ${tool}.`);
     }
+}
+
+// Whether a request changes the page (the little Captain gets a new picture after these).
+export function isBrowserAction(tool: string): boolean {
+    return ['browser_open', 'browser_click', 'browser_type', 'browser_press', 'browser_select', 'browser_scroll', 'browser_back', 'browser_input', 'browser_switch'].includes(tool);
 }
 
 export function describeBrowser(tool: string, a: Record<string, unknown>): string {
@@ -667,6 +1177,10 @@ export function describeBrowser(tool: string, a: Record<string, unknown>): strin
     case 'browser_read': return 'Reading the page';
     case 'browser_screenshot': return 'Looking at the page';
     case 'browser_wait': return 'Waiting for the page';
+    case 'browser_input': {
+        const act = (a.action ?? {}) as PixelAction;
+        return act.type === 'type' ? `Typing "${s(act.text, 30)}"` : act.type === 'keypress' ? `Pressing ${cuaCombo(act.keys ?? [])}` : act.type === 'screenshot' ? 'Looking at the page' : act.type === 'scroll' ? 'Scrolling' : act.type === 'wait' ? 'Waiting' : 'Clicking';
+    }
     default: return 'Working in Chrome';
     }
 }

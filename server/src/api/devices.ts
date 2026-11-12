@@ -19,6 +19,12 @@ export function deviceRoutes(app: FastifyInstance, api: Api): void {
 
     app.patch('/devices/:id', async (req) => devices.changeDevice(ctx, req.user, (req.params as P).id, Patch.parse(req.body)));
 
+    // "Show me" on the little Captain or a hand-over card.
+    app.post('/devices/:id/show', async (req) => {
+        await ctx.devices.show(req.user, (req.params as P).id);
+        return {ok: true};
+    });
+
     app.delete('/devices/:id', async (req) => {
         await devices.removeDevice(ctx, req.user, (req.params as P).id);
         return {ok: true};

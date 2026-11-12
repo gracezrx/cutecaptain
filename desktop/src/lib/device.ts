@@ -18,8 +18,18 @@ import type {Device, DeviceRequest, ServerEvent} from './types';
 const KEY_ID = 'device.id';
 const KEY_ENABLED = 'device.enabled';
 
-// What the orb shows while an agent works on this Mac.
-export type DriveActivity = {runId: string | null; text: string; phase: 'working' | 'done' | 'stopped' | 'error'};
+// What the orb shows while an agent works on this Mac, or in your Chrome
+// (from the extension's device_progress, relayed by the server).
+export type DriveActivity = {
+    runId: string | null;
+    text: string;
+    phase: 'working' | 'done' | 'stopped' | 'error';
+    where?: 'mac' | 'chrome';
+    deviceId?: string;
+    site?: string; // 'Gmail'
+    thumb?: string; // a small picture of the tab
+    background?: boolean; // in a tab you're not looking at
+};
 
 type Send = (msg: Record<string, unknown>) => void;
 
@@ -31,6 +41,7 @@ let name = 'This Mac';
 let queue: Promise<unknown> = Promise.resolve();
 let current: {request: DeviceRequest; cancel: () => void} | null = null;
 let driving: string | null = null; // the run at work on this Mac
+let elsewhere: {runId: string | null; deviceId: string} | null = null; // a run at work in your Chrome
 let idleTimer: number | undefined;
 const listeners = new Set<(d: Device[]) => void>();
 let devices: Device[] = [];
@@ -132,7 +143,7 @@ function handleRequest(req: DeviceRequest): void {
             return;
         }
         startDriving(req.runId);
-        tell({runId: req.runId, text: describe(req), phase: 'working'});
+        tell({runId: req.runId, text: describe(req), phase: 'working', where: 'mac', deviceId: deviceId ?? undefined});
         let cancelled = false;
         current = {request: req, cancel: () => (cancelled = true)};
         try {
@@ -191,6 +202,16 @@ function describe(req: DeviceRequest): string {
 
 // Esc in any app, or Stop on the orb: end the run and refuse what's pending.
 export async function stopDrive(reason = 'Stopped by you'): Promise<void> {
+    if (!driving && elsewhere) {
+        // Work in Chrome: stopping the run is enough; the extension hears it's released.
+        const {runId, deviceId: id} = elsewhere;
+        elsewhere = null;
+        tell({runId, text: reason, phase: 'stopped', where: 'chrome', deviceId: id});
+        if (runId) {
+            await api.cancelRun(runId).catch(() => undefined);
+        }
+        return;
+    }
     const runId = driving;
     if (current) {
         current.cancel();
@@ -215,9 +236,21 @@ export function handleDeviceEvent(e: ServerEvent): boolean {
         listeners.forEach((fn) => fn(devices));
         return true;
     }
+    case 'device_progress':
+        // Work in your Chrome (this Mac's own work it shows by itself).
+        if (isTauri && e.data.kind === 'chrome' && e.data.deviceId !== deviceId) {
+            elsewhere = {runId: e.data.runId, deviceId: e.data.deviceId};
+            tell({runId: e.data.runId, text: e.data.text, phase: 'working', where: 'chrome', deviceId: e.data.deviceId, site: e.data.site, thumb: e.data.thumb, background: e.data.background});
+        }
+        return true;
+    case 'device_show':
+        return true;
     case 'device_released':
         if (e.data.deviceId === deviceId && driving === e.data.runId) {
             stopDriving('done', 'Done');
+        } else if (elsewhere && elsewhere.deviceId === e.data.deviceId && elsewhere.runId === e.data.runId) {
+            elsewhere = null;
+            tell({runId: e.data.runId, text: 'Done', phase: 'done', where: 'chrome', deviceId: e.data.deviceId});
         }
         return true;
     default:
@@ -237,10 +270,17 @@ export function startDeviceLink(sender: Send, reconnect: () => void): () => void
     let gone = false;
     void listen('device-stop', () => void stopDrive()).then((u) => (gone ? u() : (un = u)));
     void listen('orb-stop-drive', () => void stopDrive()).then((u) => (gone ? u() : (un2 = u)));
+    let un3: (() => void) | undefined;
+    void listen<{deviceId?: string}>('orb-show-device', (e) => {
+        if (e.payload?.deviceId) {
+            void api.showDevice(e.payload.deviceId).catch(() => undefined);
+        }
+    }).then((u) => (gone ? u() : (un3 = u)));
     return () => {
         gone = true;
         un?.();
         un2?.();
+        un3?.();
         send = null;
         reconnectRequested = null;
         if (driving) {

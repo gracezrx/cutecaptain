@@ -76,6 +76,7 @@ export async function boot(opts: BootOptions = {}): Promise<Instance> {
         forward: (userIds, event, o) => cluster.forward(userIds, event, o),
         onDeviceRegister: (userId, connectionId, device) => devices.register(userId, connectionId, device),
         onDeviceResult: (userId, connectionId, requestId, ok, result, error) => devices.answered(userId, connectionId, requestId, ok, result, error),
+        onDeviceProgress: (userId, connectionId, requestId, progress) => devices.progress(userId, connectionId, requestId, progress),
         onDeviceClosed: (connectionId) => devices.closed(connectionId),
         onDevicesAlive: (ids) => devices.alive(ids),
     });

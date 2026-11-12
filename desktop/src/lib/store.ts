@@ -435,6 +435,16 @@ export function ownAccountApp(tool: string | undefined): string | null {
     if (m) {
         return APP_NAMES[m[1]];
     }
+    // Their own Mac or Chrome, which an agent is working in.
+    if (/^(computer_|screen_task$)/.test(tool ?? '')) {
+        return 'Mac';
+    }
+    if ((tool ?? '').startsWith('browser_')) {
+        return 'Chrome';
+    }
+    if (tool === 'hand_over') {
+        return 'computer';
+    }
     const mcp = (tool ?? '').match(/^mcp_([a-z0-9_]+?)_/);
     return mcp ? `${mcp[1].charAt(0).toUpperCase()}${mcp[1].slice(1)} connection` : null;
 }

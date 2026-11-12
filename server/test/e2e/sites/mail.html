@@ -1,0 +1,71 @@
+<!doctype html>
+<!-- A made-up webmail page for testing Captain's Chrome extension: a compose
+     window like the big webmail apps have (recipient chips with an email
+     attribute, a subject field, a rich-text body, a Send button that is a
+     div with a role and a tooltip), a search box, and a sent list. -->
+<html><head><meta charset="utf-8"><title>Mailbox · Compose</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 0; background: #f4f6fb; color: #1d2230; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: #fff; border-bottom: 1px solid #e3e6ef; }
+  header b { font-size: 18px; }
+  form.search { flex: 1; display: flex; gap: 8px; }
+  form.search input { flex: 1; padding: 8px 12px; border-radius: 18px; border: 1px solid #d5d9e6; }
+  main { padding: 20px; }
+  [role="dialog"] { width: 560px; background: #fff; border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,.12); padding: 0 0 12px; }
+  .bar { padding: 10px 14px; background: #eef1f8; border-radius: 12px 12px 0 0; font-weight: 700; }
+  .row { display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-bottom: 1px solid #eef0f5; }
+  .chip { padding: 2px 8px; border-radius: 10px; background: #e6ebff; }
+  .row input { flex: 1; border: 0; outline: 0; font: inherit; padding: 4px 0; }
+  [aria-label="Message Body"] { min-height: 140px; padding: 10px 14px; outline: 0; }
+  .foot { display: flex; gap: 10px; padding: 0 14px; }
+  .send { background: #3a6fd8; color: #fff; padding: 8px 18px; border-radius: 18px; font-weight: 700; cursor: pointer; }
+  .toast { margin-top: 14px; font-weight: 700; color: #1f9d55; }
+</style></head>
+<body>
+<header><b>Mailbox</b>
+  <form class="search" onsubmit="event.preventDefault(); document.getElementById('searched').textContent = 'Searched: ' + this.q.value;">
+    <input name="q" aria-label="Search mail" placeholder="Search mail"><button>Search</button>
+  </form>
+</header>
+<main>
+  <div role="dialog" aria-label="New message">
+    <div class="bar">New message</div>
+    <div class="row">To <span id="chips"></span><input aria-label="To recipients" id="to"></div>
+    <div class="row"><input name="subjectbox" aria-label="Subject" placeholder="Subject" id="subject"></div>
+    <div contenteditable="true" role="textbox" aria-label="Message Body" id="body"></div>
+    <div class="foot">
+      <div role="button" class="send" aria-label="Send ‪(⌘Enter)‬" data-tooltip="Send ‪(⌘Enter)‬" id="send" tabindex="0">Send</div>
+      <div role="button" aria-label="Discard draft" tabindex="0" onclick="document.getElementById('body').textContent=''">🗑</div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+  <div id="searched"></div>
+</main>
+<script>
+  const q = new URLSearchParams(location.search);
+  window.__sent = [];
+  function chip(email) {
+    const c = document.createElement('span');
+    c.className = 'chip';
+    c.setAttribute('email', email);
+    c.textContent = email.split('@')[0];
+    document.getElementById('chips').appendChild(c);
+  }
+  (q.get('to') || '').split(',').filter(Boolean).forEach(chip);
+  document.getElementById('subject').value = q.get('su') || '';
+  document.getElementById('body').innerText = q.get('body') || '';
+  document.getElementById('to').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.value.includes('@')) { chip(e.target.value.trim()); e.target.value = ''; e.preventDefault(); }
+  });
+  function send(e) {
+    const msg = {how: e ? `${e.type}${e.isTrusted ? ' (trusted)' : ''}` : '', at: Date.now(), to: [...document.querySelectorAll('#chips [email]')].map((c) => c.getAttribute('email')), subject: document.getElementById('subject').value, body: document.getElementById('body').innerText};
+    window.__sent.push(msg);
+    document.title = 'Mailbox · Sent';
+    document.getElementById('toast').textContent = 'Message sent';
+  }
+  document.getElementById('send').addEventListener('click', send);
+  document.getElementById('body').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); }
+  });
+</script>
+</body></html>

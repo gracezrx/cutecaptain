@@ -256,6 +256,8 @@ export const api = {
     updateDevice: (id: string, body: {name?: string; autopilot?: boolean}) => patch<Device>(`/devices/${id}`, body),
     removeDevice: (id: string) => del(`/devices/${id}`),
     answerDevice: (id: string, requestId: string, body: {ok: boolean; result?: unknown; error?: string}) => post(`/devices/${id}/requests/${requestId}`, body),
+    // "Show me": the device brings the tab or app an agent is working in forward.
+    showDevice: (id: string) => post(`/devices/${id}/show`, {}),
 };
 
 export function errorMessage(e: unknown): string {

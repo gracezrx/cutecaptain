@@ -117,6 +117,15 @@ export const config = {
         joinInDelayMs: int('CAPTAIN_JOIN_IN_DELAY_MS', 4000),
         joinInCooldownMs: int('CAPTAIN_JOIN_IN_COOLDOWN_MS', 180_000),
     },
+    // The OpenAI computer-use engine (agents/computer-use.ts): on when there is
+    // an OpenAI key (Settings → Models, or OPENAI_API_KEY).
+    computerUse: {
+        model: env('OPENAI_COMPUTER_MODEL', 'gpt-6.1-sol'),
+        maxTurns: int('OPENAI_COMPUTER_MAX_TURNS', 40),
+        // For the usage ledger and budgets: the model's price per million tokens.
+        usdPerMillionIn: int('OPENAI_COMPUTER_USD_PER_M_IN', 5),
+        usdPerMillionOut: int('OPENAI_COMPUTER_USD_PER_M_OUT', 20),
+    },
     workers: {
         enabled: bool('WORKERS', true),
         concurrency: int('WORKER_CONCURRENCY', 4),

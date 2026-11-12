@@ -18,9 +18,12 @@ export type ToolContext = {
 };
 
 // `images` are data URLs (screenshots) the model is shown after the text.
-export type ToolResult = {content: string; fileIds?: string[]; images?: string[]};
+// `ask`: the tool found, while running, that a person must approve first (a
+// device saw that the click would send an email). The runner pauses as for
+// any approval and, when approved, runs the tool again with `ask.args`.
+export type ToolResult = {content: string; fileIds?: string[]; images?: string[]; ask?: ApprovalText & {args: Record<string, unknown>}};
 
-export type ApprovalText = {title: string; reason: string; fields: {label: string; value: string}[]};
+export type ApprovalText = {title: string; reason: string; fields: {label: string; value: string}[]; kind?: 'approval' | 'handover'; deviceId?: string | null};
 
 export type Tool = {
     name: string;
@@ -38,6 +41,8 @@ export type Tool = {
     describe?: (args: Record<string, unknown>) => ApprovalText;
     // What the agent's message says while it runs ("Looking in Gmail").
     activity?: (args: Record<string, unknown>) => string;
+    // What the agent is told when the person declines (default: "rejected").
+    declined?: string;
 };
 
 export function str(v: unknown, max = 4000): string {

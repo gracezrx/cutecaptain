@@ -646,6 +646,22 @@ button.fc-chip {
   background: #3a6fd8;
   animation: fc-dot 1.2s infinite;
 }
+/* The little Captain's picture of the tab it's working in (Chrome, in the background). */
+.fc-drive-view {
+  border-radius: 10px;
+  overflow: hidden;
+  background: #11141b;
+  box-shadow: 0 0 0 1px rgba(91, 108, 255, 0.35), 0 6px 18px rgba(20, 30, 80, 0.18);
+  aspect-ratio: 16 / 10;
+}
+.fc-drive-view img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top left;
+}
+
 .fc-foot {
   padding-top: 10px;
   border-top: 1px solid rgba(20, 39, 105, 0.07);

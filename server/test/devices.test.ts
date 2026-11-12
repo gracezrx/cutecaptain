@@ -7,47 +7,13 @@ import {after, before, describe, it} from 'node:test';
 import {Catalog} from '../src/llm/catalog.js';
 import type {EventEnvelope} from '../src/shared/types.js';
 
-import {expectStatus, fakeProvider, type FakeRequest, model, signup, socket, startServer, systemText, type TestServer, waitFor} from './helpers.js';
+import {expectStatus, fakeDevice, fakeProvider, type FakeRequest, model, signup, startServer, systemText, type TestServer, waitFor} from './helpers.js';
 
 type Post = {id: string; type: string; message: string; userId: string; rootId: string | null; props: Record<string, any>};
 type Run = {id: string; status: string; kind: string; rootPostId: string | null; error: string | null};
 type Device = {id: string; kind: string; name: string; online: boolean; autopilot: boolean; capabilities: string[]};
 
 const PNG = `data:image/png;base64,${Buffer.from('fake png bytes').toString('base64')}`;
-
-// A Mac app (or Chrome) on the socket: registers, answers requests with the
-// given handler, and records what it was asked.
-async function fakeDevice(base: string, token: string, reg: {id?: string | null; kind: 'mac' | 'chrome'; name: string; capabilities?: string[]}, handler: (tool: string, args: Record<string, unknown>) => {ok: boolean; result?: unknown; error?: string} | 'ignore') {
-    const sock = await socket(base, token);
-    const asked: {id: string; tool: string; args: Record<string, unknown>; runId: string | null}[] = [];
-    let deviceId = '';
-    sock.ws.on('message', (m) => {
-        const msg = JSON.parse(m.toString());
-        if (msg.status === 'OK' && msg.data?.deviceId) {
-            deviceId = msg.data.deviceId;
-        }
-        if (msg.event === 'device_request' && msg.data.deviceId === deviceId) {
-            asked.push({id: msg.data.id, tool: msg.data.tool, args: msg.data.args, runId: msg.data.runId});
-            const out = handler(msg.data.tool, msg.data.args);
-            if (out !== 'ignore') {
-                sock.ws.send(JSON.stringify({action: 'device_result', seq: 99, requestId: msg.data.id, ...out}));
-            }
-        }
-    });
-    sock.ws.send(JSON.stringify({action: 'device_register', seq: 2, device: {id: reg.id ?? null, kind: reg.kind, name: reg.name, capabilities: reg.capabilities ?? []}}));
-    await waitFor(async () => deviceId || null, 3000, 'device id');
-    // Closing waits until the server has marked it offline.
-    const close = async () => {
-        sock.close();
-        await waitFor(async () => {
-            const res = await fetch(`${base}/api/v1/devices`, {headers: {Authorization: `Bearer ${token}`}});
-            const list = (await res.json()) as {id: string; online: boolean}[];
-            const me = list.find((d) => d.id === deviceId);
-            return !me || !me.online || null;
-        }, 5000, 'device offline');
-    };
-    return {id: deviceId, asked, events: sock.events, close};
-}
 
 describe('devices: agents using the person\'s Mac and Chrome', () => {
     let s: TestServer;

@@ -38,7 +38,12 @@ export const GOOGLE_APPS: ConnectorApp[] = [
 // An action on someone's own account (sending from their Gmail, changing
 // their Notion through MCP…): only they may approve it, not a workspace admin.
 export function onOwnAccount(toolName: string): boolean {
-    return toolName.startsWith('mcp_') || GOOGLE_APPS.some((a) => [...a.read, ...a.write].some((s) => s.toLowerCase() === toolName));
+    return toolName.startsWith('mcp_') || onOwnDevice(toolName) || GOOGLE_APPS.some((a) => [...a.read, ...a.write].some((s) => s.toLowerCase() === toolName));
+}
+
+// Their own Mac or Chrome (agents/tools/device.ts): only they decide, never an admin.
+export function onOwnDevice(toolName: string): boolean {
+    return toolName.startsWith('computer_') || toolName.startsWith('browser_') || toolName === 'screen_task' || toolName === 'hand_over';
 }
 
 export function appFor(toolkit: string): ConnectorApp | undefined {

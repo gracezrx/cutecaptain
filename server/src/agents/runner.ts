@@ -23,11 +23,12 @@ import {withoutImageData} from './history.js';
 import {mcpTools} from '../connectors/mcp/tools.js';
 import {connectorTools} from '../connectors/tools.js';
 
+import {routeGuide} from './playbooks.js';
 import {deviceGuide} from './prompts.js';
-import {deviceTools, isDeviceTool} from './tools/device.js';
+import {deviceTools, GATE_CAPABILITY, isDeviceTool} from './tools/device.js';
 import {getTool, toolDefs, toolsFor} from './tools/index.js';
 import {linksIn} from './tools/web.js';
-import type {Tool, ToolContext} from './tools/types.js';
+import type {ApprovalText, Tool, ToolContext, ToolResult} from './tools/types.js';
 
 export type StepState = {messages: ChatMessage[]; pending: ToolCall[]; fileIds: string[]};
 
@@ -113,7 +114,8 @@ export async function runAgent(input: RunnerInput): Promise<RunnerOutcome> {
     // Working on a screen takes many small steps; plain tool use takes few.
     const rounds = Math.max(1, device.tools.length ? config.agents.maxComputerRounds : config.agents.maxToolRounds);
     if (device.tools.length) {
-        addDeviceGuide(state.messages, deviceGuide(device.devices.map((d) => ({kind: d.kind, name: d.name})), requester.displayName));
+        const route = {tools: allowed, chrome: device.devices.some((d) => d.kind === 'chrome'), mac: device.devices.some((d) => d.kind === 'mac')};
+        addDeviceGuide(state.messages, deviceGuide(device.devices.map((d) => ({kind: d.kind, name: d.name, gated: d.capabilities.includes(GATE_CAPABILITY)})), requester.displayName) + routeGuide(route, requestText(state.messages)));
     }
 
     // The reply message, created up front so people see the agent working.
@@ -206,15 +208,19 @@ export async function runAgent(input: RunnerInput): Promise<RunnerOutcome> {
     const toolContext = (): ToolContext => ({ctx, agent, agentUser, requester, channel, run, stepId: input.stepId, threadRoot: input.threadRoot, signal: input.signal, trustedLinks});
 
     // Ask a person before an action with outside effects. Returns the approval.
-    const askApproval = async (tool: Tool, call: ToolCall, args: Record<string, unknown>): Promise<ApprovalRow> => {
-        const d = tool.describe?.(args) ?? {title: `Run ${tool.name}`, reason: '', fields: []};
+    // `text` comes from a tool that found, while running, that it must ask.
+    const askApproval = async (tool: Tool, call: ToolCall, args: Record<string, unknown>, text?: ApprovalText): Promise<ApprovalRow> => {
+        const d = text ?? tool.describe?.(args) ?? {title: `Run ${tool.name}`, reason: '', fields: []};
         const approval = await createApproval(ctx.sql, {
             workspaceId: channel.workspaceId, channelId: channel.id, runId: run.id, stepId: input.stepId, agentId: agent.id,
             tool: tool.name, args, toolCallId: call.id, title: d.title, reason: d.reason, fields: d.fields, requestedBy: requester.id,
         });
-        const card: DecisionCard = {approvalId: approval.id, runId: run.id, title: d.title, reason: d.reason, fields: d.fields, tool: tool.name, requestedBy: requester.id, status: 'pending', decidedBy: null, decidedAt: null};
+        const card: DecisionCard = {
+            approvalId: approval.id, runId: run.id, title: d.title, reason: d.reason, fields: d.fields, tool: tool.name, requestedBy: requester.id, status: 'pending', decidedBy: null, decidedAt: null,
+            ...(d.kind ? {kind: d.kind} : {}), ...(d.deviceId ? {deviceId: d.deviceId} : {}),
+        };
         const post = await savePost(ctx, agentUser, channel, {
-            message: `@${requester.username} needs to approve: ${d.title}`,
+            message: d.kind === 'handover' ? `@${requester.username}, your turn: ${d.title.replace(/^Your turn:\s*/i, '')}` : `@${requester.username} needs to approve: ${d.title}`,
             rootId: input.threadRoot,
             type: 'decision',
             props: {decision: card},
@@ -223,21 +229,25 @@ export async function runAgent(input: RunnerInput): Promise<RunnerOutcome> {
         return approval;
     };
 
-    const runTool = async (tool: Tool, args: Record<string, unknown>): Promise<string> => {
+    // A tool's answer, or (`ask`) its request to have a person approve first.
+    const runTool = async (tool: Tool, args: Record<string, unknown>): Promise<{content: string; ask?: ToolResult['ask']}> => {
         try {
             const res = await tool.run(toolContext(), args);
+            if (res.ask) {
+                return {content: res.content, ask: res.ask};
+            }
             state.fileIds.push(...(res.fileIds ?? []));
             if (res.images?.length) {
                 freshImages.push(...res.images);
                 needVision = true;
             }
-            return res.content.slice(0, isDeviceTool(tool.name) ? 60_000 : 20_000);
+            return {content: res.content.slice(0, isDeviceTool(tool.name) ? 60_000 : 20_000)};
         } catch (e) {
             if (input.signal.aborted) {
                 throw new CancelledError();
             }
             log.info({tool: tool.name, err: (e as Error).message}, 'tool failed');
-            return `The ${tool.name} tool failed: ${(e as Error).message.slice(0, 500)}`;
+            return {content: `The ${tool.name} tool failed: ${(e as Error).message.slice(0, 500)}`};
         }
     };
 
@@ -249,7 +259,7 @@ export async function runAgent(input: RunnerInput): Promise<RunnerOutcome> {
             const tool = lookup(call.function.name);
             let args: Record<string, unknown> = {};
             try {
-                args = JSON.parse(call.function.arguments || '{}');
+                args = modelArgs(call.function.name, JSON.parse(call.function.arguments || '{}'));
             } catch {
                 state.messages.push({role: 'tool', tool_call_id: call.id, content: 'The arguments were not valid JSON. Try again.'});
                 continue;
@@ -262,7 +272,11 @@ export async function runAgent(input: RunnerInput): Promise<RunnerOutcome> {
                 return askApproval(tool, call, args);
             }
             stream(`_${(ACTIVITY[tool.name] ?? tool.activity ?? (() => `Using ${tool.name}`))(args)}…_`);
-            state.messages.push({role: 'tool', tool_call_id: call.id, content: await runTool(tool, args)});
+            const r = await runTool(tool, args);
+            if (r.ask) {
+                return askApproval(tool, call, r.ask.args, r.ask);
+            }
+            state.messages.push({role: 'tool', tool_call_id: call.id, content: r.content});
         }
         return null;
     };
@@ -288,11 +302,19 @@ export async function runAgent(input: RunnerInput): Promise<RunnerOutcome> {
             const tool = lookup(a.tool);
             const call: ToolCall = {id: a.toolCallId ?? `call_${a.id}`, type: 'function', function: {name: a.tool, arguments: JSON.stringify(a.args)}};
             let content: string;
-            if (a.status === 'approved' && tool) {
+            if (a.status === 'approved' && !tool) {
+                content = `This was approved, but ${a.tool} isn't available now (the device may have gone offline), so it was not done. Tell the person, and what they can do.`;
+            } else if (a.status === 'approved' && tool) {
                 // At most once, even if this resume is retried after a crash.
                 if (await claimApprovalExecution(ctx.sql, a.id)) {
                     stream(`_${a.title}…_`);
-                    content = await runTool(tool, a.args);
+                    const r = await runTool(tool, a.args);
+                    if (r.ask) {
+                        // The device found something else to ask about (the page changed).
+                        await setApprovalResult(ctx.sql, a.id, 'Not done: asked again.');
+                        return pause(await askApproval(tool, call, r.ask.args, r.ask));
+                    }
+                    content = r.content;
                     await setApprovalResult(ctx.sql, a.id, content);
                 } else {
                     content = (await getApproval(ctx.sql, a.id))?.result ?? 'This approved action was already started earlier; its result is unknown. Don\'t repeat it. Tell the person to check before trying again.';
@@ -300,7 +322,7 @@ export async function runAgent(input: RunnerInput): Promise<RunnerOutcome> {
             } else if (a.note) {
                 content = `The person didn't approve this as it was and asked for a change: "${a.note}". It was not done. Make that change and ask for approval again with the revised version.`;
             } else {
-                content = 'The person rejected this action, so it was not done. Don\'t try it again; say what you would do instead or ask what they want changed.';
+                content = tool?.declined ?? 'The person rejected this action, so it was not done. Don\'t try it again; say what you would do instead or ask what they want changed.';
             }
             state.messages.push({role: 'tool', tool_call_id: call.id, content});
             const next = await processPending();
@@ -370,10 +392,22 @@ export async function runAgent(input: RunnerInput): Promise<RunnerOutcome> {
 
 // ------------------------------------------------------------ screens in the conversation
 
-const GUIDE_MARK = '\n\n## Using ';
+const GUIDE_MARK = '\n## Using ';
 const KEEP_IMAGES = 3;
 const SCREEN_NOTE = '[The screen after your last actions, latest last. Coordinates you give are pixels in the latest image.]';
 const OLD_SCREEN = '[an earlier screenshot, no longer shown]';
+
+// What was asked, to pick the app recipes worth including: what people wrote
+// (recent first) and, for a plan step, the goal and the step's instructions.
+// Not the rest of the system prompt: an agent's own description ("sending
+// email needs approval") would match every time.
+function requestText(messages: ChatMessage[]): string {
+    const text = (m: ChatMessage) => (typeof m.content === 'string' ? m.content : (m.content ?? []).map((p) => (p.type === 'text' ? p.text : '')).join(' '));
+    const said = messages.filter((m) => m.role === 'user').map(text).reverse();
+    const system = messages[0]?.role === 'system' ? text(messages[0]) : '';
+    const step = /The overall goal: [\s\S]*?(?=\nHand back only your part)/.exec(system)?.[0] ?? '';
+    return [step, ...said].join('\n').slice(0, 8000);
+}
 
 // The system prompt gets the device guide once (a resumed transcript already has it).
 function addDeviceGuide(messages: ChatMessage[], guide: string): void {
@@ -402,4 +436,19 @@ function showImages(messages: ChatMessage[], images: string[]): void {
         });
     }
     messages.push({role: 'user', content: [{type: 'text', text: SCREEN_NOTE}, ...images.slice(-KEEP_IMAGES).map((url): ContentPart => ({type: 'image_url', image_url: {url}}))]});
+}
+
+// ------------------------------------------------------------ arguments from the model
+
+// Keys only the server may set: a confirmation comes from a person's approval
+// (tools/device.ts adds it when an approved call runs again), never from the
+// model. Anything starting with "__" is internal.
+export function modelArgs(tool: string, raw: unknown): Record<string, unknown> {
+    const args = raw && typeof raw === 'object' && !Array.isArray(raw) ? {...(raw as Record<string, unknown>)} : {};
+    for (const k of Object.keys(args)) {
+        if (k.startsWith('__') || (isDeviceTool(tool) && k === 'confirm')) {
+            delete args[k];
+        }
+    }
+    return args;
 }

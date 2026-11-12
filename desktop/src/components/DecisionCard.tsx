@@ -1,4 +1,4 @@
-import {Check, Clock, CornerUpLeft, ShieldCheck, X} from 'lucide-react';
+import {Check, Clock, CornerUpLeft, Hand, ShieldCheck, X} from 'lucide-react';
 import {useState} from 'react';
 
 import {api, errorMessage} from '../lib/api';
@@ -40,6 +40,9 @@ export function DecisionCard({post, compact = false}: {post: Post; compact?: boo
     }
     const pending = decision.status === 'pending';
     const allowed = pending && canDecide(decision, me, workspace);
+    // A hand-over: the agent paused for the person to do something themselves
+    // (sign in, type a code). Done / Stop instead of Approve / Decline.
+    const handover = decision.kind === 'handover';
 
     // "Change it": say what to change. The draft is turned down with that
     // note, and the same agent revises it and asks again.
@@ -82,10 +85,12 @@ export function DecisionCard({post, compact = false}: {post: Post; compact?: boo
     return (
         <div
             className={`mt-1.5 max-w-xl rounded-2xl bg-surface ring-1 ring-line ${compact ? 'p-3' : 'p-4'}`}
-            style={pending ? {boxShadow: 'inset 3px 0 0 var(--gold)'} : undefined}
+            style={pending ? {boxShadow: `inset 3px 0 0 ${handover ? 'var(--accent)' : 'var(--gold)'}`} : undefined}
         >
             <div className='flex items-start gap-2'>
-                <ShieldCheck size={compact ? 15 : 16} strokeWidth={2.25} className={`mt-px shrink-0 ${pending ? 'text-gold' : 'text-muted'}`} aria-hidden/>
+                {handover ?
+                    <Hand size={compact ? 15 : 16} strokeWidth={2.25} className={`mt-px shrink-0 ${pending ? 'text-accent' : 'text-muted'}`} aria-hidden/> :
+                    <ShieldCheck size={compact ? 15 : 16} strokeWidth={2.25} className={`mt-px shrink-0 ${pending ? 'text-gold' : 'text-muted'}`} aria-hidden/>}
                 <div className='min-w-0'>
                     <div className={`font-bold leading-snug text-ink ${compact ? 'text-[13px]' : 'text-[14px]'}`}>{decision.title}</div>
                     {decision.reason && <p className={`mt-0.5 leading-relaxed text-text ${compact ? 'text-[12.5px]' : 'text-[13px]'} ${pending ? '' : 'line-clamp-1'}`}>{decision.reason}</p>}
@@ -115,19 +120,32 @@ export function DecisionCard({post, compact = false}: {post: Post; compact?: boo
                                 style={{boxShadow: 'var(--shadow-send)'}}
                             >
                                 <Check size={14} strokeWidth={2.5}/>
-                                {busy === 'approve' ? 'Approving…' : 'Approve'}
+                                {handover ? (busy === 'approve' ? 'Carrying on…' : 'Done, carry on') : busy === 'approve' ? 'Approving…' : 'Approve'}
                             </button>
-                            <button
-                                type='button'
-                                disabled={busy !== null}
-                                onClick={() => setChanging((c) => !c)}
-                                aria-expanded={changing}
-                                className='inline-flex h-8 items-center rounded-full px-3.5 text-[13px] font-semibold text-ink ring-1 ring-line transition-colors hover:bg-tint disabled:opacity-60'
-                            >
-                                Change it
-                            </button>
+                            {handover ? (
+                                decision.deviceId && (
+                                    <button
+                                        type='button'
+                                        disabled={busy !== null}
+                                        onClick={() => void api.showDevice(decision.deviceId!).catch((e) => setError(errorMessage(e)))}
+                                        className='inline-flex h-8 items-center rounded-full px-3.5 text-[13px] font-semibold text-ink ring-1 ring-line transition-colors hover:bg-tint disabled:opacity-60'
+                                    >
+                                        Show me
+                                    </button>
+                                )
+                            ) : (
+                                <button
+                                    type='button'
+                                    disabled={busy !== null}
+                                    onClick={() => setChanging((c) => !c)}
+                                    aria-expanded={changing}
+                                    className='inline-flex h-8 items-center rounded-full px-3.5 text-[13px] font-semibold text-ink ring-1 ring-line transition-colors hover:bg-tint disabled:opacity-60'
+                                >
+                                    Change it
+                                </button>
+                            )}
                             <button type='button' disabled={busy !== null} onClick={() => void act('reject')} className={`${link} ml-1`}>
-                                {busy === 'reject' ? 'Declining…' : 'Decline'}
+                                {handover ? (busy === 'reject' ? 'Stopping…' : 'Stop') : busy === 'reject' ? 'Declining…' : 'Decline'}
                             </button>
                             {more && (
                                 <button type='button' onClick={() => setDetails((d) => !d)} aria-expanded={details} className={link}>
@@ -166,7 +184,7 @@ export function DecisionCard({post, compact = false}: {post: Post; compact?: boo
                 </>
             ) : (
                 <div className='mt-2.5 flex flex-wrap items-center gap-2 pl-6'>
-                    <Outcome decision={decision} by={decision.decidedBy ? displayName(users[decision.decidedBy]) : null}/>
+                    <Outcome decision={decision} by={decision.decidedBy ? displayName(users[decision.decidedBy]) : null} handover={handover}/>
                     {decision.fields.length > 0 && (
                         <button type='button' onClick={() => setDetails((d) => !d)} aria-expanded={details} className={link}>{details ? 'Less' : 'Details'}</button>
                     )}
@@ -179,11 +197,14 @@ export function DecisionCard({post, compact = false}: {post: Post; compact?: boo
 
 // The answer, as a badge: green for approved, red for declined, gold for
 // sent back with a change, grey when it ran out of time.
-function Outcome({decision: d, by}: {decision: Decision; by: string | null}) {
+function Outcome({decision: d, by, handover = false}: {decision: Decision; by: string | null; handover?: boolean}) {
     const when = d.decidedAt ? ` · ${timeOfDay(d.decidedAt)}` : '';
     const badge = 'inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-semibold';
     if (d.status === 'approved') {
-        return <span className={`${badge} bg-success-tint text-success`}><Check size={13} strokeWidth={2.75}/>Approved{by ? ` by ${by}` : ''}{when}</span>;
+        return <span className={`${badge} bg-success-tint text-success`}><Check size={13} strokeWidth={2.75}/>{handover ? 'Done' : 'Approved'}{by ? ` by ${by}` : ''}{when}</span>;
+    }
+    if (d.status === 'rejected' && handover) {
+        return <span className={`${badge} bg-bg-subtle text-muted ring-1 ring-line`}><X size={13} strokeWidth={2.75}/>Stopped{by ? ` by ${by}` : ''}{when}</span>;
     }
     if (d.status === 'rejected' && d.note) {
         return (
