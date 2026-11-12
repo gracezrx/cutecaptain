@@ -367,7 +367,7 @@ function ExtensionSteps({onDone, onThisMac, serverUrl}: {onDone: () => void; onT
                     </li>
                 ) : (
                     <li>
-                        Download <b>Captain-Chrome-extension.zip</b> from the{' '}
+                        Download <b>cutecaptain-Chrome-extension.zip</b> from the{' '}
                         <button type='button' className='font-semibold text-accent-text hover:underline' onClick={() => void openExternal(RELEASE_PAGE)}>release page</button> and unzip it.
                     </li>
                 )}

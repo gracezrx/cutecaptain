@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Captain uses the microphone for voice typing when you hold the voice key.</string>
+  <string>cutecaptain uses the microphone for voice typing when you hold the voice key.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
   <string>Captain turns what you say into text for your messages.</string>
   <key>NSDocumentsFolderUsageDescription</key>
-  <string>Captain looks for the settings of a Captain server you ran before (captain-desktop/server/.env), so you can connect to the same database without pasting it.</string>
+  <string>cutecaptain looks for the settings of a Captain server you ran before (cutecaptain/server/.env or captain-desktop/server/.env), so you can connect to the same database without pasting it.</string>
 </dict>
 </plist>

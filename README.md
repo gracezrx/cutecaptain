@@ -1,4 +1,6 @@
-# Captain Desktop
+# cutecaptain
+
+(This repo and the Mac app were called captain-desktop and Captain until Nov 3, 2026. The assistant inside is still Captain.)
 
 Captain is a group chat where your team and its AI agents work together. Ask **@captain** for something big and it:
 
@@ -88,8 +90,8 @@ It was filmed on the real app. The agents' answers are scripted best-case replie
 
 ## Get it
 
-- **Mac app:** download `Captain.dmg` from the [app-latest release](../../releases/tag/app-latest), drag Captain to Applications, and right-click → Open the first time. On first launch, paste your database address (or your server `.env`) and Captain starts its own server.
-- **Chrome extension:** download `Captain-Chrome-extension.zip` from the same release, unzip it, open `chrome://extensions`, turn on Developer mode, and choose **Load unpacked**.
+- **Mac app:** download `cutecaptain.dmg` from the [app-latest release](../../releases/tag/app-latest), drag cutecaptain to Applications, and right-click → Open the first time. On first launch, paste your database address (or your server `.env`) and Captain starts its own server.
+- **Chrome extension:** download `cutecaptain-Chrome-extension.zip` from the same release, unzip it, open `chrome://extensions`, turn on Developer mode, and choose **Load unpacked**.
 
 GitHub builds both on a Mac whenever someone runs **Actions → Mac app → Run workflow**.
 

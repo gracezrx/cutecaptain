@@ -122,19 +122,19 @@ To add or reprioritize models, edit `server/config/models.json`. Check the price
 
 GitHub builds the app on a Mac: **Actions → Mac app → Run workflow** (leave "release" on). About ten minutes later, the [app-latest release](../../releases/tag/app-latest) has:
 
-- `Captain.dmg`: open it and drag Captain to Applications
-- `Captain-mac.zip`: the same app, zipped
-- `Captain-Chrome-extension.zip`: the extension
+- `cutecaptain.dmg`: open it and drag cutecaptain to Applications
+- `cutecaptain-mac.zip`: the same app, zipped
+- `cutecaptain-Chrome-extension.zip`: the extension
 
-Until Quest Space's Developer ID is added (see Signing and notarizing below), the app is signed ad hoc, so macOS asks the first time: right-click Captain → **Open**. If macOS still refuses, open **System Settings → Privacy & Security** and click **Open Anyway**.
+Until Quest Space's Developer ID is added (see Signing and notarizing below), the app is signed ad hoc, so macOS asks the first time: right-click cutecaptain → **Open**. If macOS still refuses, open **System Settings → Privacy & Security** and click **Open Anyway**.
 
 ### Captain on this Mac (the built-in server)
 
 The app carries the server and runs it with the Mac's Node.js (22 or newer), on `http://127.0.0.1:8787`, only reachable from the Mac itself.
 
-- On first launch, choose **This Mac**. If you ran the Captain server yourself before, the app finds its `server/.env` (in `~/captain-desktop`, `~/Documents/captain-desktop`, `~/Developer/captain-desktop`, `~/Projects/captain-desktop`, `~/code/captain-desktop` or `~/Documents/GitHub/captain-desktop`) and shows its Supabase project: click **Connect**. It uses that file's `DATABASE_URL` and `APP_SECRET`, so model keys saved by that server keep working. macOS may ask once to let Captain read your Documents folder.
+- On first launch, choose **This Mac**. If you ran the Captain server yourself before, the app finds its `server/.env` in a `cutecaptain` folder (or `captain-desktop`, the repo's name before Nov 3, 2026) in your home folder, `~/Documents`, `~/Developer`, `~/Projects`, `~/code`, `~/Documents/GitHub` or `~/GitHub` and shows its Supabase project: click **Connect**. It uses that file's `DATABASE_URL` and `APP_SECRET`, so model keys saved by that server keep working. macOS may ask once to let cutecaptain read your Documents folder.
 - Otherwise, paste the database address (Supabase → Connect → Session pooler, as it is) and type the database password in its own field; the app puts it in place of `[YOUR-PASSWORD]`. You can paste a whole server `.env` instead.
-- The address and secret are kept in `~/Library/Application Support/ai.captainspace.desktop/secrets.json`, readable only by you (mode 600), together with your session. Not the Keychain: until the app is signed with a Developer ID, each build has a new identity and macOS hides the earlier build's Keychain items, so every update asked for the database again. Data uploads go to `~/Library/Application Support/ai.captainspace.desktop/files`, and the server's log is in `~/Library/Logs/ai.captainspace.desktop/server.log`.
+- The address and secret are kept in `~/Library/Application Support/ai.captainspace.cutecaptain/secrets.json`, readable only by you (mode 600), together with your session. Not the Keychain: until the app is signed with a Developer ID, each build has a new identity and macOS hides the earlier build's Keychain items, so every update asked for the database again. Data uploads go to `~/Library/Application Support/ai.captainspace.cutecaptain/files`, and the server's log is in `~/Library/Logs/ai.captainspace.cutecaptain/server.log`. Before the rename the folders were named `ai.captainspace.desktop`; the first start after updating moves them to the new names, so the session and database settings carry over.
 - The server starts with the app and stops when you quit. The menu bar menu has **Restart Captain on this Mac**.
 - It serves the web app too: `http://127.0.0.1:8787` in any browser on that Mac.
 
@@ -161,7 +161,7 @@ You need macOS 13 or newer, Xcode command-line tools, Rust (`rustup`), and Node 
 cd desktop
 npm install
 npm run tauri build -- --bundles app,dmg
-# → src-tauri/target/release/bundle/macos/Captain.app and dmg/Captain_0.1.0_aarch64.dmg
+# → src-tauri/target/release/bundle/macos/cutecaptain.app and dmg/cutecaptain_0.1.0_aarch64.dmg
 ```
 
 - The build copies the server into the app first (`npm run bundle:server`).

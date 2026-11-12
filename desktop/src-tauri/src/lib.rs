@@ -1,4 +1,4 @@
-//! Captain Desktop's native core: the menu bar icon, the global shortcuts,
+//! cutecaptain's native core: the menu bar icon, the global shortcuts,
 //! the frosted panel that drops down from the icon, the floating talk button,
 //! voice (Apple's speech recognition and voices, through the captain-voice
 //! helper), screen snapshots, notifications that open the right thread, and
@@ -160,7 +160,7 @@ fn open_url(url: String) -> Result<(), String> {
     // Web and email links, and the Privacy & Security pages of System Settings.
     let settings = lower.starts_with("x-apple.systempreferences:com.apple.preference.security");
     if !(lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:") || settings) {
-        return Err("Only web and email links open from Captain.".into());
+        return Err("Only web and email links open from cutecaptain.".into());
     }
     #[cfg(target_os = "macos")]
     Command::new("/usr/bin/open").arg(&url).spawn().map_err(|e| e.to_string())?;
@@ -171,7 +171,7 @@ fn open_url(url: String) -> Result<(), String> {
 fn chrome_extension_reveal(app: AppHandle) -> Result<String, String> {
     let from = app.path().resource_dir().map_err(|e| e.to_string())?.join("extension");
     if !from.join("manifest.json").exists() {
-        return Err("This copy of Captain doesn't include the Chrome extension. Download Captain-Chrome-extension.zip from the release page instead.".into());
+        return Err("This copy of cutecaptain doesn't include the Chrome extension. Download cutecaptain-Chrome-extension.zip from the release page instead.".into());
     }
     let to = app.path().app_data_dir().map_err(|e| e.to_string())?.join("Chrome extension");
     let _ = std::fs::remove_dir_all(&to);
@@ -192,9 +192,9 @@ fn set_badge(app: AppHandle, count: u32) {
         let title = if count > 0 { Some(count.to_string()) } else { None };
         let _ = tray.set_title(title);
         let _ = tray.set_tooltip(Some(if count > 0 {
-            format!("Captain · {count} waiting")
+            format!("cutecaptain · {count} waiting")
         } else {
-            "Captain".to_string()
+            "cutecaptain".to_string()
         }));
     }
 }
@@ -616,8 +616,8 @@ fn local_server_setup(app: AppHandle, database_url: String, app_secret: Option<S
 
 // ------------------------------------------------------------ settings from a server you already ran
 //
-// If you ran the Captain server yourself before (its .env in a captain-desktop
-// folder), the app can use the same Supabase database and APP_SECRET (so model
+// If you ran the Captain server yourself before (its .env in a cutecaptain or
+// captain-desktop folder), the app can use the same Supabase database and APP_SECRET (so model
 // keys saved there still work) with one click. Only the project's name goes to
 // the page; the address and secret stay here.
 
@@ -625,8 +625,12 @@ fn env_candidates(app: &AppHandle) -> Vec<PathBuf> {
     let Ok(home) = app.path().home_dir() else {
         return vec![];
     };
-    ["captain-desktop", "Documents/captain-desktop", "Developer/captain-desktop", "Projects/captain-desktop", "code/captain-desktop", "Documents/GitHub/captain-desktop", "GitHub/captain-desktop"]
+    // The repo was called captain-desktop until Nov 3, 2026; clones made before
+    // then keep that folder name.
+    let folders = ["", "Documents/", "Developer/", "Projects/", "code/", "Documents/GitHub/", "GitHub/"];
+    ["cutecaptain", "captain-desktop"]
         .iter()
+        .flat_map(|name| folders.iter().map(move |folder| format!("{folder}{name}")))
         .map(|dir| home.join(dir).join("server").join(".env"))
         .collect()
 }
@@ -657,7 +661,7 @@ fn project_label(url: &str) -> String {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FoundSettings {
-    path: String,  // where it is, for showing ("~/Documents/captain-desktop/server/.env")
+    path: String,  // where it is, for showing ("~/Documents/cutecaptain/server/.env")
     project: String,
     keeps_keys: bool, // has an APP_SECRET, so model keys saved by that server still work
 }
@@ -1223,6 +1227,41 @@ fn on_app_menu(app: &AppHandle, id: &str) {
 
 // ------------------------------------------------------------ app
 
+// ------------------------------------------------------------ the rename
+
+// The app was called Captain, with the identifier ai.captainspace.desktop, until
+// Nov 3, 2026. macOS keeps an app's files in folders named after its identifier
+// (the session and the built-in server's settings in Application Support, the
+// server's log in Logs, the web view's storage in WebKit), so on the first start
+// after the rename, move the old folders to the new names. A folder is only
+// moved when the new one doesn't exist yet, so this runs once and never
+// overwrites anything.
+const OLD_IDENTIFIER: &str = "ai.captainspace.desktop";
+
+fn adopt_old_folders(app: &AppHandle) {
+    let resolver = app.path();
+    let mut dirs: Vec<PathBuf> = [
+        resolver.app_config_dir(),
+        resolver.app_data_dir(),
+        resolver.app_local_data_dir(),
+        resolver.app_log_dir(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if let Ok(home) = resolver.home_dir() {
+        dirs.push(home.join("Library/WebKit").join(&app.config().identifier));
+    }
+    for dir in dirs {
+        let Some(parent) = dir.parent() else { continue };
+        let old = parent.join(OLD_IDENTIFIER);
+        if dir == old || dir.exists() || !old.is_dir() {
+            continue;
+        }
+        let _ = std::fs::rename(&old, &dir);
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
@@ -1289,6 +1328,9 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
 
+            // Before anything reads its settings: bring them over from the old name.
+            adopt_old_folders(&handle);
+
             // Start the built-in server if it's been set up.
             if secret_value(&handle, KEY_DATABASE_URL).is_some() {
                 start_local_in_background(&handle);
@@ -1323,18 +1365,18 @@ pub fn run() {
                 &[
                     &MenuItem::with_id(app, "write", "New message", true, None::<&str>)?,
                     &MenuItem::with_id(app, "inbox", "Inbox", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "open", "Open Captain", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "open", "Open cutecaptain", true, None::<&str>)?,
                     &MenuItem::with_id(app, "setup", "Get started…", true, None::<&str>)?,
                     &MenuItem::with_id(app, "orb-show", "Show the little Captain", true, None::<&str>)?,
                     &MenuItem::with_id(app, "restart-server", "Restart Captain on this Mac", true, None::<&str>)?,
                     &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(app, "quit", "Quit Captain", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "quit", "Quit cutecaptain", true, None::<&str>)?,
                 ],
             )?;
             TrayIconBuilder::with_id(TRAY_ID)
                 .icon(Image::from_bytes(include_bytes!("../icons/tray@2x.png"))?)
                 .icon_as_template(true)
-                .tooltip("Captain")
+                .tooltip("cutecaptain")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {

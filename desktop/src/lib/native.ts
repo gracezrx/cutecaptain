@@ -296,7 +296,7 @@ export async function localServerSetup(text: string, password = ''): Promise<voi
 }
 
 // The settings of a Captain server you ran yourself before (its server/.env
-// in a captain-desktop folder). Only which project it is comes back; the
+// in a cutecaptain or captain-desktop folder). Only which project it is comes back; the
 // address and secret stay in the app.
 export type FoundServerSettings = {path: string; project: string; keepsKeys: boolean};
 
@@ -484,7 +484,7 @@ export async function revealChromeExtension(): Promise<string> {
     return invoke<string>('chrome_extension_reveal');
 }
 
-export const RELEASE_PAGE = 'https://github.com/gracezrx/captain-desktop/releases/tag/app-latest';
+export const RELEASE_PAGE = 'https://github.com/gracezrx/cutecaptain/releases/tag/app-latest';
 
 // ------------------------------------------------------------ voice typing (Mac app)
 
